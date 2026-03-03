@@ -1,29 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { CheckCircle, AlertCircle, Info, Zap, ChevronsRight, ChevronsLeft, Cpu } from 'lucide-react';
+import { CheckCircle, AlertCircle, Info, Zap } from 'lucide-react';
 import TypingAnimation from './TypingAnimation';
 
-const AgentLog = ({ log = [], isLoading = false, isCollapsed, onToggle }) => {
-    const [displayedLog, setDisplayedLog] = useState(() => {
-        const saved = sessionStorage.getItem('agentLogDisplayed');
-        return saved ? JSON.parse(saved) : [];
-    });
+const AgentLog = ({ log = [], isLoading = false }) => {
+    const [displayedLog, setDisplayedLog] = useState([]);
     const logEndRef = useRef(null);
-    const [isAnimating, setIsAnimating] = useState(false);
 
     useEffect(() => {
         if (logEndRef.current) {
             logEndRef.current.scrollIntoView({ behavior: 'smooth' });
         }
-        sessionStorage.setItem('agentLogDisplayed', JSON.stringify(displayedLog));
-    }, [displayedLog, isAnimating]);
+    }, [displayedLog]);
 
     const handleTypingComplete = () => {
         // Check if there are more logs to display
         if (displayedLog.length < log.length) {
             // Add the next log item to the displayedLog
             setDisplayedLog(currentLogs => [...currentLogs, log[currentLogs.length]]);
-        } else {
-            setIsAnimating(false);
         }
     };
 
@@ -32,16 +25,11 @@ const AgentLog = ({ log = [], isLoading = false, isCollapsed, onToggle }) => {
             setDisplayedLog([]);
             return;
         }
-        // If the live log has more items than the displayed one, start the animation.
-        if (log.length > displayedLog.length) {
-            setIsAnimating(true);
-            // If displayedLog is empty, start with the first item.
-            // Otherwise, the typing complete handler will add the next one.
-            if (displayedLog.length === 0) {
+        // Start the animation sequence if it hasn't started
+        if (log.length > 0 && displayedLog.length === 0) {
             setDisplayedLog([log[0]]);
-            }
         }
-    }, [log, displayedLog.length]);
+    }, [log, displayedLog]);
 
     const categorizeLog = (logText) => {
         const patterns = [
@@ -95,29 +83,24 @@ const AgentLog = ({ log = [], isLoading = false, isCollapsed, onToggle }) => {
     };
 
     return (
-        <div className={`agent-log-container ${isCollapsed ? 'collapsed' : ''}`}>
-            {!isCollapsed ? (
+        <div className="agent-log-container">
+            <div className="agent-log-wrapper">
+                {/* Header */}
                 <div className="agent-log-header">
                     <div className="agent-log-header-title">
-                        <Cpu size={14} />
                         <h4>System Logs</h4>
-                    </div>
-                    {isLoading && (
-                        <div className="agent-log-active-indicator">
-                            <div></div>
-                            <span>Active</span>
+                        <div className="agent-log-header-meta">
+                            <span>{log.length}</span>
+                            {isLoading && (
+                                <div className="agent-log-active-indicator">
+                                    <div />
+                                    <span>Active</span>
+                                </div>
+                            )}
                         </div>
-                    )}
-                    <button className="agent-log-toggle" onClick={onToggle} aria-label="Collapse logs">
-                        <ChevronsRight size={18} className="toggle-icon" />
-                    </button>
+                    </div>
                 </div>
-            ) : (
-                <button className="agent-log-toggle" onClick={onToggle} aria-label="Expand logs">
-                    <ChevronsLeft size={18} className="toggle-icon" />
-                </button>
-            )}
-            <div className="agent-log-wrapper">
+
                 {/* Log Content */}
                 <div className="log-content-area">
                     {log.length === 0 ? (
@@ -142,8 +125,8 @@ const AgentLog = ({ log = [], isLoading = false, isCollapsed, onToggle }) => {
                                         </div>
                                         <div className="log-item-text">
                                             {/* Only animate the last item in the list */}
-                                            {isAnimating && index === displayedLog.length - 1 ? (
-                                                <TypingAnimation
+                                            {index === displayedLog.length - 1 ? (
+                                                <TypingAnimation 
                                                     text={categorized.text}
                                                     onComplete={handleTypingComplete}
                                                 />

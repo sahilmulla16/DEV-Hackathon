@@ -144,19 +144,11 @@ npm install
 
 ### Running the Application
 
-**IMPORTANT**: The backend requires **two separate terminal windows** to run correctly: one for the web server and one for the AI task processor.
-
 ```bash
-# In your first terminal, start the Flask web server:
-# This serves the website and handles basic API requests.
+# Start the backend
 python app.py
 
-# In your second terminal, start the background worker:
-# This is the process that listens for approved tasks and runs the AI agent.
-# If this is not running, the agent will never respond to approved tasks.
-python background_worker.py
-
-# In a third terminal, start the React frontend development server:
+# Start the frontend (in separate terminal)
 cd frontend
 npm start
 ```

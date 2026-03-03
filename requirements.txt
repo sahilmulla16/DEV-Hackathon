@@ -9,7 +9,6 @@ llama-index
 langgraph
 
 langchain-cerebras
-cerebras-cloud-sdk
 
 # Extra runtime libraries
 faiss-cpu
@@ -24,4 +23,3 @@ ddgs
 Flask
 Flask-Cors
 Werkzeug
-supabase
