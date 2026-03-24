@@ -1,162 +1,167 @@
-import os
-import traceback
-import logging
-from flask import Flask, request, jsonify
+import os, json, queue, traceback, logging, threading
+from datetime import datetime
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 from langchain_chroma import Chroma
 from werkzeug.utils import secure_filename
-
-# Import your existing agent logic
-from agent import run_agent_once, ingest_knowledge_base
-# Import the core config to access global variables and constants
+from agent import run_agent_once, ingest_knowledge_base, backfill_rag_metadata
+from sandbox import ws_list_files, ws_read_file, ws_reset, BASE_DIR
 import core.config
 
-
-# --- Logging Configuration ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# --- Basic Flask App Setup ---
+logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
-# --- Configuration ---
-# Best practice: Use environment variables for configuration
 class Config:
-    UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', 'uploads')
-    CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',')
-    DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() in ('true', '1', 't')
+    UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER','uploads')
+    CORS_ORIGINS  = os.environ.get('CORS_ORIGINS','http://localhost:3000').split(',')
+    DEBUG = os.environ.get('FLASK_DEBUG','False').lower() in ('true','1','t')
 
 app.config.from_object(Config)
-
-# --- CORS Configuration ---
 CORS(app, resources={r"/api/*": {"origins": app.config['CORS_ORIGINS']}})
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+core.config._vectorstore = Chroma(collection_name=core.config.MEM_COLLECTION, embedding_function=core.config._embedding_fn, persist_directory=core.config.PERSIST_DIR)
+ALLOWED = {'.pdf','.doc','.docx','.txt','.csv','.xlsx','.xls','.ppt','.pptx'}
 
-# --- Ensure upload folder exists ---
-if not os.path.exists(app.config['UPLOAD_FOLDER']):
-    os.makedirs(app.config['UPLOAD_FOLDER'])
+# ── Startup: patch any old RAG chunks missing 'filename' metadata ──
+try:
+    _bf = backfill_rag_metadata()
+    logger.info(f"RAG startup backfill: {_bf}")
+except Exception as _e:
+    logger.warning(f"RAG startup backfill failed (non-fatal): {_e}")
 
-# --- Initialize Vector Store on Startup ---
-print("🧠 Initializing agent memory vector store for Flask app...")
-core.config._vectorstore = Chroma(
-    collection_name=core.config.MEM_COLLECTION,
-    embedding_function=core.config._embedding_fn,
-    persist_directory=core.config.PERSIST_DIR
-)
-print("✅ Agent memory loaded for Flask app.")
+def _fi(fn):
+    p=os.path.join(app.config['UPLOAD_FOLDER'],fn); st=os.stat(p)
+    return {"name":fn,"size":st.st_size,"uploaded":datetime.fromtimestamp(st.st_mtime).isoformat(),"ext":os.path.splitext(fn)[1].lstrip('.').lower()}
 
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """
-    Health check endpoint to confirm the API is running.
-    """
-    return jsonify({"status": "ok"}), 200
+def _sse(ev,d): return f"event: {ev}\ndata: {json.dumps(d)}\n\n"
 
+@app.route('/api/chat/stream', methods=['POST'])
+def chat_stream():
+    data=request.json or {}; user_input=data.get('message','').strip(); history=data.get('history',[])
+    if not user_input: return jsonify({"error":"No message"}),400
+    q=queue.Queue()
+    def on_log(e): q.put({"_e":"log","entry":e})
+    def on_ws(e): q.put({"_e":"workspace_event",**e})
+    def run():
+        try:
+            r=run_agent_once(user_input=user_input,history=history,on_log=on_log,on_workspace_event=on_ws)
+            q.put({"_e":"answer","text":r.get("final","No answer.")})
+        except Exception as exc:
+            logger.error(f"Agent error: {exc}\n{traceback.format_exc()}")
+            q.put({"_e":"error","message":str(exc)})
+        finally: q.put({"_e":"done"})
+    threading.Thread(target=run,daemon=True).start()
+    def generate():
+        yield ": ok\n\n"
+        while True:
+            try: item=q.get(timeout=90)
+            except queue.Empty: yield ": ka\n\n"; continue
+            ev=item.pop("_e")
+            if ev=="done": yield _sse("done",{}); break
+            yield _sse(ev,item)
+    return Response(stream_with_context(generate()),mimetype="text/event-stream",
+        headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no","Access-Control-Allow-Origin":"*"})
 
-@app.route('/api/features', methods=['GET'])
-def get_features():
-    """
-    Provides a list of features for the homepage.
-    This is mock data.
-    """
-    features = [
-        {
-            "id": 1,
-            "icon": "code",
-            "title": "Function Calling",
-            "description": "The model can call functions and integrate with external tools and APIs, extending its capabilities beyond natural language processing."
-        },
-        {
-            "id": 2,
-            "icon": "search",
-            "title": "Web Search",
-            "description": "The model can perform web searches to find real-time information, answer questions about current events, and access a vast repository of knowledge."
-        },
-        {
-            "id": 3,
-            "icon": "file-text",
-            "title": "File System Operations",
-            "description": "The model can read, write, and modify files on the local file system, enabling it to interact with and manage project files directly."
-        }
-    ]
-    return jsonify(features)
-    
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    """
-    Handles chat messages from the user.
-    Receives: {"message": "user's question", "history": [["user msg", "agent msg"], ...]}
-    Returns:  {"answer": "agent's response", "log": [...]}
-    """
-    data = request.json
-    user_input = data.get('message')
-    # New: Get the conversation history from the request
-    history = data.get('history', [])
-
-    if not user_input:
-        return jsonify({"error": "No message provided"}), 400
-
-    logging.info(f"Received message: '{user_input}', with {len(history)} turns in history.")
+    d=request.json or {}; u=d.get('message','').strip(); h=d.get('history',[])
+    if not u: return jsonify({"error":"No message"}),400
     try:
-        # New: Pass the history to the agent runner
-        result = run_agent_once(user_input, history)
+        r=run_agent_once(user_input=u,history=h)
+        return jsonify({"answer":r.get("final","Error."),"log":r.get("log",[])})
+    except Exception as exc:
+        logger.error(f"{exc}"); return jsonify({"error":"Internal error."}),500
 
-        # Extract the final answer and the log
-        final_answer = result.get("final", "I'm sorry, I encountered an error.")
-        log_steps = result.get("log", [])
+# Workspace routes
+@app.route('/api/workspace/files',methods=['GET'])
+def ws_files(): return jsonify(ws_list_files())
+@app.route('/api/workspace/files/<path:fp>',methods=['GET'])
+def ws_file_get(fp): r=ws_read_file(fp); return (jsonify(r),404) if r["status"]=="error" else jsonify(r)
 
-        return jsonify({
-            "answer": final_answer,
-            "log": log_steps
-        })
+@app.route('/api/workspace/files/<path:fp>',methods=['POST'])
+def ws_file_write(fp):
+    """Write a file to the workspace. Body: {content: str}"""
+    from sandbox import ws_write_file
+    data = request.json or {}
+    content = data.get('content','')
+    result = ws_write_file(fp, content)
+    return jsonify(result), (200 if result.get('status')=='success' else 400)
 
-    except Exception as e:
-        error_id = os.urandom(8).hex()
-        logging.error(f"Error ID [{error_id}] during agent execution: {e}\n{traceback.format_exc()}")
-        return jsonify({"error": "An internal error occurred."}), 500
-
-@app.route('/api/status', methods=['GET'])
-def status():
-    """
-    Returns the current status of the agent system.
-    In a real-world scenario, this would be dynamic.
-    """
-    # This is mock data based on your request.
-    # In the future, this could be derived from a state management system.
-    status_data = {
-        "activeAgents": 4,
-        "tasksInProgress": 6,
-        "systemStatus": "Online",
-        "agents": ["Meta LLaMA Agent", "Cerebras Agent", "Research Agent", "Critic Agent"]
-    }
-    return jsonify(status_data)
-
-
-@app.route('/api/upload', methods=['POST'])
-def upload():
-    """
-    Handles file uploads for the knowledge base.
-    """
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
-
-    if file:
-        filename = secure_filename(file.filename)
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(file_path)
-
-        logging.info(f"File '{filename}' uploaded successfully. Ingesting...")
+@app.route('/api/workspace/run', methods=['POST'])
+def ws_run():
+    """Run a command in the workspace and stream output via SSE."""
+    from sandbox import ws_run_code_streaming
+    data    = request.json or {}
+    command = data.get('command','').strip()
+    if not command:
+        return jsonify({"error":"No command"}), 400
+    q = queue.Queue()
+    def _run():
         try:
-            # Ingest the file into the knowledge base
-            ingest_status = ingest_knowledge_base(file_path)
-            logging.info(ingest_status)
+            for evt in ws_run_code_streaming(command):
+                q.put(evt)
+        except Exception as exc:
+            q.put({"type":"stderr","line":str(exc)})
+        finally:
+            q.put(None)  # sentinel
+    threading.Thread(target=_run, daemon=True).start()
+    def generate():
+        yield ": ok\n\n"
+        while True:
+            item = q.get()
+            if item is None:
+                yield _sse("run_done", {})
+                break
+            yield _sse(item.get("type","stdout"), item)
+    return Response(stream_with_context(generate()), mimetype="text/event-stream",
+        headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no","Access-Control-Allow-Origin":"*"})
 
-            # Now, trigger the agent to process the file with a generic prompt
-            status = f"File '{filename}' ingested. You can now ask questions about it."
-            return jsonify({"status": status})
-        except Exception as e:
-            error_id = os.urandom(8).hex()
-            logging.error(f"Error ID [{error_id}] during ingestion of '{filename}': {e}\n{traceback.format_exc()}")
-            return jsonify({"error": f"Failed to process file '{filename}'. Please contact support."}), 500
+@app.route('/api/workspace/reset',methods=['POST'])
+def ws_reset_route(): return jsonify(ws_reset())
+@app.route('/api/workspace/servers',methods=['GET'])
+def ws_svrs():
+    from sandbox import ws_list_servers; return jsonify(ws_list_servers())
+@app.route('/api/workspace/servers/<int:port>',methods=['DELETE'])
+def ws_stop(port):
+    from sandbox import ws_stop_server; return jsonify(ws_stop_server(port))
+
+# Upload routes
+@app.route('/api/files',methods=['GET'])
+def list_files():
+    try:
+        fld=app.config['UPLOAD_FOLDER']
+        files=[_fi(f) for f in os.listdir(fld) if os.path.isfile(os.path.join(fld,f)) and os.path.splitext(f)[1].lower() in ALLOWED]
+        files.sort(key=lambda x:x['uploaded'],reverse=True); return jsonify(files),200
+    except Exception as exc: logger.error(exc); return jsonify({"error":"Could not list files."}),500
+
+@app.route('/api/files/<filename>',methods=['DELETE'])
+def del_file(filename):
+    safe=secure_filename(filename); p=os.path.join(app.config['UPLOAD_FOLDER'],safe)
+    if not os.path.exists(p): return jsonify({"error":"Not found."}),404
+    os.remove(p); return jsonify({"status":"deleted","name":safe}),200
+
+@app.route('/api/upload',methods=['POST'])
+def upload():
+    if 'file' not in request.files: return jsonify({"error":"No file"}),400
+    f=request.files['file']
+    if not f.filename: return jsonify({"error":"No filename"}),400
+    ext=os.path.splitext(f.filename)[1].lower()
+    if ext not in ALLOWED: return jsonify({"error":f"Unsupported: {ext}"}),400
+    fn=secure_filename(f.filename); fp=os.path.join(app.config['UPLOAD_FOLDER'],fn)
+    f.save(fp)
+    try: ingest_knowledge_base(fp); return jsonify({"status":f"'{fn}' uploaded. Use @{fn} to reference it.","file":_fi(fn)})
+    except Exception as exc: logger.error(exc); return jsonify({"error":f"Failed to process '{fn}'."}),500
+
+@app.route('/api/health',methods=['GET'])
+def health(): return jsonify({"status":"ok","workspace":str(BASE_DIR)}),200
+
+@app.route('/api/rag/backfill',methods=['POST'])
+def rag_backfill():
+    """Manually trigger metadata backfill for old RAG chunks."""
+    result = backfill_rag_metadata()
+    return jsonify({"status":"ok","message":result}),200
+@app.route('/api/status',methods=['GET'])
+def status(): return jsonify({"activeAgents":4,"tasksInProgress":6,"systemStatus":"Online","agents":["LLaMA","Cerebras","Research","Critic"]})
+@app.route('/api/features',methods=['GET'])
+def features(): return jsonify([{"id":1,"icon":"code","title":"Sandboxed Execution","description":"All code runs inside workspace/."},{"id":2,"icon":"search","title":"Web Search","description":"Real-time DuckDuckGo search."},{"id":3,"icon":"file-text","title":"File System","description":"Create, edit, run files in the sandbox."}])

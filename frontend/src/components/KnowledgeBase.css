@@ -1,0 +1,320 @@
+/* ════════════════════════════════════════════════════════════
+   KnowledgeBase.css  —  Noir Studio theme
+   ════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap');
+
+.kb-root {
+    position: relative;
+    font-family: 'Outfit', system-ui, sans-serif;
+    width: 100%;
+}
+
+/* ── Header ──────────────────────────────────────────────── */
+.kb-header {
+    display:        flex;
+    align-items:    center;
+    justify-content:space-between;
+    cursor:         pointer;
+    padding:        6px 2px;
+    user-select:    none;
+    gap:            6px;
+}
+
+.kb-header-left {
+    display:     flex;
+    align-items: center;
+    gap:         7px;
+}
+
+.kb-header-icon {
+    width:           22px;
+    height:          22px;
+    background:      rgba(245,166,35,0.12);
+    border:          1px solid rgba(245,166,35,0.22);
+    border-radius:   5px;
+    display:         flex;
+    align-items:     center;
+    justify-content: center;
+    color:           #f5a623;
+    flex-shrink:     0;
+}
+
+.kb-header-title {
+    font-size:     0.65rem;
+    font-weight:   700;
+    letter-spacing:1.1px;
+    text-transform:uppercase;
+    color:         #606060;
+}
+
+.kb-count-badge {
+    font-family:   'Geist Mono', monospace;
+    font-size:     0.58rem;
+    font-weight:   600;
+    padding:       1px 6px;
+    background:    rgba(245,166,35,0.1);
+    border:        1px solid rgba(245,166,35,0.2);
+    border-radius: 10px;
+    color:         #fbbf24;
+}
+
+.kb-header-right {
+    display:     flex;
+    align-items: center;
+    gap:         6px;
+}
+
+.kb-refresh-btn {
+    background:    transparent;
+    border:        1px solid transparent;
+    border-radius: 4px;
+    color:         #606060;
+    display:       flex;
+    align-items:   center;
+    justify-content:center;
+    padding:       3px;
+    cursor:        pointer;
+    transition:    all 0.18s ease;
+}
+.kb-refresh-btn:hover { color:#a0a0a0; border-color:rgba(255,255,255,0.1); }
+.kb-refresh-btn:disabled { opacity:0.4; cursor:not-allowed; }
+
+.kb-refresh-btn .spin {
+    animation: kb-spin 0.9s linear infinite;
+}
+@keyframes kb-spin { to { transform:rotate(360deg); } }
+
+.kb-chevron {
+    color:      #606060;
+    transition: transform 0.26s ease;
+}
+.kb-chevron.rotated { transform:rotate(-90deg); }
+
+/* ── Body ────────────────────────────────────────────────── */
+.kb-body {
+    overflow:   hidden;
+    transition: max-height 0.35s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease;
+    max-height: 600px;
+    opacity:    1;
+    margin-top: 10px;
+}
+.kb-body--collapsed {
+    max-height: 0;
+    opacity:    0;
+    margin-top: 0;
+}
+
+/* ── Hint bar ────────────────────────────────────────────── */
+.kb-hint {
+    display:       flex;
+    align-items:   center;
+    gap:           5px;
+    padding:       5px 8px;
+    background:    rgba(245,166,35,0.05);
+    border:        1px solid rgba(245,166,35,0.12);
+    border-radius: 6px;
+    font-size:     0.62rem;
+    color:         #a0a0a0;
+    margin-bottom: 8px;
+}
+.kb-hint svg { color:#f5a623; flex-shrink:0; }
+.kb-hint strong { color:#fbbf24; }
+
+/* ── Error ───────────────────────────────────────────────── */
+.kb-error {
+    display:       flex;
+    align-items:   center;
+    gap:           6px;
+    padding:       7px 10px;
+    background:    rgba(239,68,68,0.07);
+    border:        1px solid rgba(239,68,68,0.2);
+    border-radius: 6px;
+    font-size:     0.7rem;
+    color:         #f87171;
+    margin-bottom: 8px;
+}
+
+/* ── Shimmer loading ─────────────────────────────────────── */
+.kb-shimmer-list { display:flex; flex-direction:column; gap:6px; }
+.kb-shimmer-row {
+    height:        48px;
+    border-radius: 8px;
+    background:    linear-gradient(90deg, #1a1a1a 25%, #222 50%, #1a1a1a 75%);
+    background-size: 200% 100%;
+    animation:     kb-shimmer 1.4s ease infinite;
+}
+@keyframes kb-shimmer {
+    0%   { background-position:200% 0; }
+    100% { background-position:-200% 0; }
+}
+
+/* ── Empty state ─────────────────────────────────────────── */
+.kb-empty {
+    display:        flex;
+    flex-direction: column;
+    align-items:    center;
+    gap:            5px;
+    padding:        20px 12px;
+    text-align:     center;
+    color:          #3d3d3d;
+}
+.kb-empty p    { font-size:0.78rem; color:#606060; margin:0; }
+.kb-empty span { font-size:0.65rem; color:#404040; }
+
+/* ── File list ───────────────────────────────────────────── */
+.kb-file-list {
+    display:        flex;
+    flex-direction: column;
+    gap:            4px;
+    max-height:     340px;
+    overflow-y:     auto;
+    padding-right:  2px;
+}
+.kb-file-list::-webkit-scrollbar       { width:3px; }
+.kb-file-list::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.08); border-radius:2px; }
+
+/* ── File row ────────────────────────────────────────────── */
+.kb-file-row {
+    display:       flex;
+    align-items:   center;
+    gap:           9px;
+    padding:       7px 8px;
+    background:    rgba(255,255,255,0.025);
+    border:        1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    transition:    all 0.18s ease;
+    animation:     kb-fadein 0.25s ease both;
+}
+.kb-file-row:hover {
+    background:   rgba(255,255,255,0.045);
+    border-color: rgba(255,255,255,0.1);
+}
+@keyframes kb-fadein {
+    from { opacity:0; transform:translateY(4px); }
+    to   { opacity:1; transform:translateY(0); }
+}
+
+/* ── File icon ───────────────────────────────────────────── */
+.kb-file-icon {
+    width:          34px;
+    height:         34px;
+    border-radius:  7px;
+    display:        flex;
+    flex-direction: column;
+    align-items:    center;
+    justify-content:center;
+    flex-shrink:    0;
+    gap:            1px;
+}
+.kb-file-ext {
+    font-family:   'Geist Mono', monospace;
+    font-size:     0.48rem;
+    font-weight:   700;
+    letter-spacing:0.3px;
+    text-transform:uppercase;
+}
+
+/* ── File info ───────────────────────────────────────────── */
+.kb-file-info {
+    flex:     1;
+    min-width:0;
+    display:  flex;
+    flex-direction:column;
+    gap:      2px;
+}
+.kb-file-name {
+    font-size:     0.72rem;
+    font-weight:   600;
+    color:         #d4d4d4;
+    white-space:   nowrap;
+    overflow:      hidden;
+    text-overflow: ellipsis;
+}
+.kb-file-meta {
+    font-family:'Geist Mono', monospace;
+    font-size:  0.58rem;
+    color:      #4a4a4a;
+}
+
+/* ── Actions ─────────────────────────────────────────────── */
+.kb-file-actions {
+    display:    flex;
+    align-items:center;
+    gap:        4px;
+    flex-shrink:0;
+}
+
+.kb-action-btn {
+    display:       flex;
+    align-items:   center;
+    gap:           3px;
+    padding:       4px 7px;
+    border-radius: 5px;
+    border:        1px solid rgba(255,255,255,0.08);
+    background:    rgba(255,255,255,0.04);
+    cursor:        pointer;
+    font-family:   'Outfit', sans-serif;
+    font-size:     0.62rem;
+    font-weight:   500;
+    transition:    all 0.18s ease;
+    white-space:   nowrap;
+    color:         #606060;
+}
+.kb-action-btn:hover {
+    background:   rgba(255,255,255,0.09);
+    border-color: rgba(255,255,255,0.15);
+    color:        #a0a0a0;
+}
+
+/* @ mention button */
+.kb-mention-btn:hover {
+    background:   rgba(245,166,35,0.1);
+    border-color: rgba(245,166,35,0.25);
+    color:        #fbbf24;
+}
+.kb-mention-btn.active {
+    background:   rgba(34,197,94,0.1);
+    border-color: rgba(34,197,94,0.25);
+    color:        #4ade80;
+}
+
+/* Delete button */
+.kb-delete-btn:hover {
+    background:   rgba(239,68,68,0.1);
+    border-color: rgba(239,68,68,0.25);
+    color:        #f87171;
+}
+.kb-delete-btn.confirm {
+    background:   rgba(239,68,68,0.15);
+    border-color: rgba(239,68,68,0.4);
+    color:        #f87171;
+    animation:    kb-shake 0.35s ease;
+}
+.kb-confirm-label { font-size:0.6rem; margin-left:1px; }
+
+@keyframes kb-shake {
+    0%,100% { transform:translateX(0); }
+    25%      { transform:translateX(-2px); }
+    75%      { transform:translateX(2px); }
+}
+
+/* ── Toast ───────────────────────────────────────────────── */
+.kb-toast {
+    position:      absolute;
+    bottom:        -38px;
+    left:          0; right:0;
+    display:       flex;
+    align-items:   center;
+    justify-content:center;
+    gap:           5px;
+    padding:       6px 12px;
+    background:    rgba(34,197,94,0.12);
+    border:        1px solid rgba(34,197,94,0.25);
+    border-radius: 8px;
+    font-size:     0.68rem;
+    color:         #4ade80;
+    animation:     kb-fadein 0.25s ease both;
+    z-index:       20;
+    pointer-events:none;
+}

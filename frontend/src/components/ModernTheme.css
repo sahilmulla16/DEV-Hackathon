@@ -1,0 +1,308 @@
+/* ════════════════════════════════════════════════════════════
+   ModernTheme.css  —  Noir Studio  |  Global component styles
+   Covers: code blocks, copy button, visualization panel,
+           execution summary, error cards, stdout blocks.
+   ════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Instrument+Serif:ital@0;1&family=Geist+Mono:wght@400;500;600&display=swap');
+
+/* ── Root tokens ──────────────────────────────────────────── */
+:root {
+    --nt-bg0:        #0f0f0f;
+    --nt-bg1:        #161616;
+    --nt-bg2:        #1e1e1e;
+    --nt-bg3:        #252525;
+    --nt-bg4:        #2e2e2e;
+    --nt-code-bg:    #0d0d0d;
+    --nt-code-head:  #141414;
+
+    --nt-border:     rgba(255,255,255,0.08);
+    --nt-border-md:  rgba(255,255,255,0.12);
+
+    --nt-gold:       #f5a623;
+    --nt-gold-dim:   rgba(245,166,35,0.13);
+    --nt-gold-glow:  rgba(245,166,35,0.22);
+    --nt-gold-txt:   #fbbf24;
+
+    --nt-text0:      #ececec;
+    --nt-text1:      #a0a0a0;
+    --nt-text2:      #606060;
+
+    --nt-success:    #22c55e;
+    --nt-error:      #ef4444;
+    --nt-warning:    #f59e0b;
+    --nt-info:       #60a5fa;
+
+    --nt-font-body:  'Outfit', system-ui, sans-serif;
+    --nt-font-serif: 'Instrument Serif', Georgia, serif;
+    --nt-font-mono:  'Geist Mono', 'Fira Code', monospace;
+
+    --nt-radius-sm:  6px;
+    --nt-radius-md:  10px;
+    --nt-radius-lg:  14px;
+    --nt-ease:       cubic-bezier(0.4,0,0.2,1);
+}
+
+/* ── Code block container ─────────────────────────────────── */
+.modern-code-block {
+    margin:        16px 0;
+    border-radius: var(--nt-radius-md);
+    overflow:      hidden;
+    border:        1px solid rgba(255,255,255,0.09);
+    background:    var(--nt-code-bg);
+    box-shadow:    0 4px 24px rgba(0,0,0,0.55);
+    font-family:   var(--nt-font-mono);
+}
+
+/* ── Code header bar ──────────────────────────────────────── */
+.code-header {
+    display:         flex;
+    align-items:     center;
+    justify-content: space-between;
+    padding:         8px 14px;
+    background:      var(--nt-code-head);
+    border-bottom:   1px solid rgba(255,255,255,0.07);
+    gap:             12px;
+}
+
+/* macOS traffic light dots */
+.code-header::before {
+    content: '';
+    display:       block;
+    width:         10px;
+    height:        10px;
+    border-radius: 50%;
+    background:    #ff5f57;
+    box-shadow:    15px 0 0 #febc2e, 30px 0 0 #28c840;
+    flex-shrink:   0;
+    margin-right:  18px; /* space after the 3 dots */
+}
+
+.language-indicator {
+    flex:          1;
+    text-align:    center;
+    font-family:   var(--nt-font-mono);
+    font-size:     0.63rem;
+    font-weight:   500;
+    color:         var(--nt-text2);
+    letter-spacing:1.1px;
+    text-transform:uppercase;
+}
+
+/* ── Copy button (inside code header) ────────────────────── */
+.copy-btn {
+    display:      flex;
+    align-items:  center;
+    gap:          5px;
+    padding:      4px 10px;
+    background:   rgba(255,255,255,0.05);
+    border:       1px solid rgba(255,255,255,0.1);
+    border-radius:var(--nt-radius-sm);
+    color:        var(--nt-text1);
+    font-family:  var(--nt-font-body);
+    font-size:    0.68rem;
+    font-weight:  500;
+    cursor:       pointer;
+    transition:   all 0.2s var(--nt-ease);
+    white-space:  nowrap;
+    flex-shrink:  0;
+}
+.copy-btn:hover {
+    background:   rgba(255,255,255,0.09);
+    border-color: rgba(255,255,255,0.18);
+    color:        var(--nt-text0);
+}
+.copy-btn.copied,
+.copy-btn.isCopied {
+    background:   rgba(34,197,94,0.1);
+    border-color: rgba(34,197,94,0.3);
+    color:        #4ade80;
+}
+
+/* ── Code content wrapper ─────────────────────────────────── */
+.code-content-wrapper {
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height:  540px;
+}
+
+.code-pre {
+    margin:      0;
+    padding:     16px 18px;
+    font-family: var(--nt-font-mono);
+    font-size:   0.81rem;
+    line-height: 1.68;
+    color:       var(--nt-text0);
+    background:  transparent;
+    white-space: pre;
+}
+
+/* ── Execution summary card ───────────────────────────────── */
+.exec-summary {
+    background:    var(--nt-bg2);
+    border:        1px solid var(--nt-border);
+    border-left:   3px solid var(--nt-gold);
+    border-radius: var(--nt-radius-md);
+    padding:       16px 18px;
+    margin:        16px 0;
+    font-family:   var(--nt-font-body);
+}
+
+.exec-summary h3 {
+    font-size:    0.82rem;
+    font-weight:  700;
+    color:        var(--nt-gold-txt);
+    margin:       0 0 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.exec-summary table {
+    width:           100%;
+    border-collapse: collapse;
+    font-size:       0.8rem;
+}
+.exec-summary th {
+    background:    var(--nt-bg3);
+    color:         var(--nt-gold-txt);
+    padding:       7px 12px;
+    text-align:    left;
+    font-size:     0.68rem;
+    font-weight:   700;
+    letter-spacing:0.5px;
+    text-transform:uppercase;
+    border-bottom: 1px solid var(--nt-border);
+}
+.exec-summary td {
+    padding:     7px 12px;
+    color:       var(--nt-text0);
+    border-bottom:1px solid rgba(255,255,255,0.04);
+    font-family: var(--nt-font-mono);
+    font-size:   0.78rem;
+}
+
+/* ── Error container ──────────────────────────────────────── */
+.error-container {
+    background:    rgba(239,68,68,0.06);
+    border:        1px solid rgba(239,68,68,0.2);
+    border-left:   3px solid #ef4444;
+    border-radius: var(--nt-radius-md);
+    padding:       14px 16px;
+    margin:        12px 0;
+}
+.error-container h3 {
+    font-size:   0.82rem;
+    font-weight: 700;
+    color:       #f87171;
+    margin:      0 0 10px;
+}
+
+/* ── Stdout container ─────────────────────────────────────── */
+.stdout-container {
+    background:    var(--nt-bg1);
+    border:        1px solid var(--nt-border);
+    border-radius: var(--nt-radius-md);
+    overflow:      hidden;
+    margin:        12px 0;
+}
+.stdout-header {
+    padding:       7px 14px;
+    background:    var(--nt-bg2);
+    border-bottom: 1px solid var(--nt-border);
+    font-family:   var(--nt-font-mono);
+    font-size:     0.65rem;
+    font-weight:   600;
+    color:         var(--nt-text2);
+    letter-spacing:0.8px;
+    text-transform:uppercase;
+}
+.stdout-container pre,
+.stdout-container code {
+    font-family:  var(--nt-font-mono);
+    font-size:    0.79rem;
+    line-height:  1.65;
+    color:        #a3e635;
+    padding:      12px 14px;
+    margin:       0;
+    overflow-x:   auto;
+    display:      block;
+    white-space:  pre;
+}
+
+/* ── Visualization panel ──────────────────────────────────── */
+.visualization-panel-container {
+    margin-top:   20px;
+    border-top:   1px solid var(--nt-border);
+    padding-top:  20px;
+}
+
+.vis-title {
+    font-size:    0.75rem;
+    font-weight:  700;
+    color:        var(--nt-gold-txt);
+    letter-spacing:0.5px;
+    text-transform:uppercase;
+    margin:       0 0 14px;
+    display:      flex;
+    align-items:  center;
+    gap:          8px;
+}
+.vis-title::before {
+    content:      '';
+    width:        3px;
+    height:       1em;
+    background:   var(--nt-gold);
+    border-radius:2px;
+    display:      block;
+}
+
+.vis-grid {
+    display:       flex;
+    flex-direction:column;
+    gap:           14px;
+}
+
+.vis-card {
+    border:        1px solid var(--nt-border);
+    border-radius: var(--nt-radius-md);
+    overflow:      hidden;
+    background:    #0e0e0e;
+    box-shadow:    0 4px 20px rgba(0,0,0,0.5);
+}
+
+.vis-header {
+    padding:       8px 14px;
+    background:    var(--nt-code-head);
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    font-family:   var(--nt-font-mono);
+    font-size:     0.68rem;
+    color:         var(--nt-text1);
+}
+
+.vis-iframe {
+    width:    100%;
+    height:   480px;
+    border:   none;
+    display:  block;
+    background: #fff;
+}
+
+.responsive-img {
+    max-width:  100%;
+    height:     auto;
+    display:    block;
+    margin:     0 auto;
+    border-radius: 0;
+}
+
+/* ── Responsive ───────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .modern-code-block { margin: 12px 0; }
+    .code-pre { font-size: 0.76rem; padding: 12px 14px; }
+    .vis-iframe { height: 320px; }
+}
+
+@media (max-width: 480px) {
+    .code-header { padding: 7px 10px; }
+    .language-indicator { display: none; }
+}

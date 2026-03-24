@@ -1,545 +1,292 @@
+"""
+coding.py  —  Sandboxed Coding Agent (Enhanced)
+=================================================
+- All coding agent files go into  workspace/coding/
+- Research agent files go into    workspace/research/
+- Always: writes code → explains → runs → starts server if web app
+- Supports Python, JavaScript/Node, React (Vite), Bash
+"""
 from __future__ import annotations
-import os, json
-from typing import TypedDict, List, Dict, Any, Optional
-from langchain.schema import HumanMessage, SystemMessage, AIMessage
+
+import json
+import os
+import re
+import time
+import random
+from typing import TypedDict, List, Dict, Any, Optional, Callable
+
 from langgraph.graph import StateGraph, END
 from langchain_cerebras import ChatCerebras
 
-# ==================== Custom Tool Executor ====================
-class ToolInvocation:
-    """Represents a tool invocation with tool name and input parameters."""
-    def __init__(self, tool, tool_input):
-        self.tool = tool
-        self.tool_input = tool_input
+import tools as _tools_module
+from tools import TOOLS
+from sandbox import BASE_DIR
 
-class ToolExecutor:
-    """Executes tools based on their name and input parameters."""
-    def __init__(self, tools):
-        self.tools = {tool.__name__: tool for tool in tools}
+# ── Subdirectory constants ──────────────────────────────────────
+CODING_DIR   = "coding"
+RESEARCH_DIR = "research"
 
-    def invoke(self, tool_invocation: ToolInvocation):
-        tool_function = self.tools.get(tool_invocation.tool)
-        if not tool_function:
-            return {"error": f"❌ Tool '{tool_invocation.tool}' not found."}
-        return tool_function(**tool_invocation.tool_input)
+for _d in (BASE_DIR / CODING_DIR, BASE_DIR / RESEARCH_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
 
-# ==================== LLM Configuration ====================
-from core.config import _llm, LLM_MODEL
-
-# Specialized LLM optimized for coding tasks
+# ── LLM ────────────────────────────────────────────────────────
 _coding_llm = ChatCerebras(
-    model="qwen-3-coder-480b",
-    temperature=0.7,
-    api_key=os.getenv("API_KEY"),
-    max_tokens=4000,
-    top_p=0.8
+    model="qwen-3-coder-480b", temperature=0.2,
+    api_key=os.getenv("API_KEY"), max_tokens=6000, top_p=0.8,
 )
 
-from tools import tool_write_file, tool_read_file, tool_run_code
-from prompts import CODE_PLANNER_SYS
+def _llm_invoke(prompt: str, retries: int = 3, base_delay: float = 1.5) -> str:
+    last = None
+    for attempt in range(retries):
+        try:
+            return _coding_llm.invoke(prompt).content.strip()
+        except Exception as exc:
+            last = exc
+            if not any(k in str(exc).lower() for k in ["server error","503","529","rate limit","timeout","try again"]):
+                raise
+            time.sleep(base_delay * (2 ** attempt) + random.uniform(0, 0.4))
+    raise last
 
-# ==================== State Definition ====================
-class CodingAgentState(TypedDict):
-    """State container for the coding agent workflow."""
-    user_input: str
-    plan: List[Dict[str, Any]]
+# ══════════════════════════════════════════════════════════════
+# STATE
+# ══════════════════════════════════════════════════════════════
+
+class CodingState(TypedDict, total=False):
+    user_input:   str
+    subdir:       str
+    plan:         List[Dict[str, Any]]
     observations: List[Dict[str, Any]]
-    draft: str
-    final: str
-    approved: bool
-    log: List[str]
+    events:       List[Dict[str, Any]]
+    draft:        str
+    final:        str
+    retries:      int
+    _on_event:    Optional[Callable]
 
-# ==================== Tool Configuration ====================
-CODING_TOOLS = [tool_write_file, tool_read_file, tool_run_code]
-coding_tool_executor = ToolExecutor(CODING_TOOLS)
-
-# ==================== UI Helper Functions ====================
-def format_section_header(title: str, emoji: str = "📌") -> str:
-    """Create a visually distinct section header."""
-    border = "─" * 50
-    return f"\n{border}\n{emoji} {title}\n{border}"
-
-def format_code_block(code: str, language: str = "python") -> str:
-    """Ensure code is properly formatted in markdown code blocks."""
-    if not code.strip().startswith("```"):
-        return f"```{language}\n{code}\n```"
-    return code
-
-def format_step_result(step_num: int, total: int, tool_name: str, success: bool) -> str:
-    """Format execution step results for better readability."""
-    icon = "✅" if success else "❌"
-    progress = f"[{step_num}/{total}]"
-    return f"{icon} {progress} {tool_name}"
-
-def format_error_message(error: str) -> str:
-    """Format error messages in a user-friendly way."""
-    return f"⚠️  **Error:** {error}"
-
-def get_language_from_filename(filename: str) -> str:
-    """
-    Detect the programming language from a filename extension.
-    
-    Args:
-        filename: The name of the file
-        
-    Returns:
-        Language identifier for syntax highlighting
-    """
-    extension_map = {
-        '.py': 'python',
-        '.js': 'javascript',
-        '.jsx': 'jsx',
-        '.ts': 'typescript',
-        '.tsx': 'tsx',
-        '.java': 'java',
-        '.cpp': 'cpp',
-        '.c': 'c',
-        '.cs': 'csharp',
-        '.go': 'go',
-        '.rs': 'rust',
-        '.rb': 'ruby',
-        '.php': 'php',
-        '.swift': 'swift',
-        '.kt': 'kotlin',
-        '.scala': 'scala',
-        '.sh': 'bash',
-        '.bash': 'bash',
-        '.zsh': 'zsh',
-        '.html': 'html',
-        '.css': 'css',
-        '.scss': 'scss',
-        '.sass': 'sass',
-        '.json': 'json',
-        '.xml': 'xml',
-        '.yaml': 'yaml',
-        '.yml': 'yaml',
-        '.md': 'markdown',
-        '.sql': 'sql',
-        '.r': 'r',
-        '.m': 'matlab',
-        '.dart': 'dart',
-        '.lua': 'lua',
-        '.pl': 'perl',
-        '.vim': 'vim',
-    }
-    
-    # Extract extension from filename
-    if '.' in filename:
-        ext = '.' + filename.rsplit('.', 1)[-1].lower()
-        return extension_map.get(ext, 'text')
-    
-    return 'text'
-
-def format_code_properly(code: str, language: str = 'python') -> str:
-    """
-    Format code with proper indentation and structure.
-    
-    Args:
-        code: The code to format
-        language: The programming language
-        
-    Returns:
-        Properly formatted code string
-    """
-    # Remove leading/trailing whitespace
-    code = code.strip()
-    
-    # Language-specific formatting
-    if language == 'python':
-        try:
-            import ast
-            # Try to parse and verify it's valid Python
-            ast.parse(code)
-            
-            # Fix common indentation issues
-            lines = code.split('\n')
-            formatted_lines = []
-            indent_level = 0
-            
-            for line in lines:
-                stripped = line.lstrip()
-                
-                # Skip empty lines
-                if not stripped:
-                    formatted_lines.append('')
-                    continue
-                
-                # Decrease indent for closing brackets, 'elif', 'else', 'except', 'finally'
-                if stripped.startswith((')', ']', '}', 'elif ', 'else:', 'except', 'finally')):
-                    indent_level = max(0, indent_level - 1)
-                
-                # Add the line with proper indentation
-                formatted_lines.append('    ' * indent_level + stripped)
-                
-                # Increase indent after colons (def, class, if, for, while, etc.)
-                if stripped.rstrip().endswith(':'):
-                    indent_level += 1
-                
-                # Decrease indent for single-line after pass/return/break/continue
-                if stripped in ('pass', 'break', 'continue') or stripped.startswith('return '):
-                    indent_level = max(0, indent_level - 1)
-            
-            return '\n'.join(formatted_lines)
-            
-        except (SyntaxError, ImportError):
-            # If parsing fails or ast not available, return original
-            pass
-    
-    elif language == 'json':
-        try:
-            # Format JSON with proper indentation
-            parsed = json.loads(code)
-            return json.dumps(parsed, indent=2, ensure_ascii=False)
-        except (json.JSONDecodeError, ValueError):
-            pass
-    
-    # For other languages or if formatting fails, normalize indentation
-    lines = code.split('\n')
-    
-    # Find the minimum indentation (excluding empty lines)
-    min_indent = float('inf')
-    for line in lines:
-        if line.strip():  # Skip empty lines
-            indent = len(line) - len(line.lstrip())
-            min_indent = min(min_indent, indent)
-    
-    # Remove excess indentation
-    if min_indent < float('inf') and min_indent > 0:
-        normalized_lines = []
-        for line in lines:
-            if line.strip():
-                normalized_lines.append(line[min_indent:])
-            else:
-                normalized_lines.append('')
-        return '\n'.join(normalized_lines)
-    
-    return code
-
-# ==================== Agent Nodes ====================
-def node_coding_planner(state: CodingAgentState) -> CodingAgentState:
-    """
-    📝 Planning Phase: Analyze the task and create an execution plan.
-    Breaks down coding tasks into actionable steps with appropriate tools.
-    """
-    print("\n" + "="*60)
-    print("📝 PLANNING PHASE: Analyzing your request...")
-    print("="*60)
-    
-    tool_descriptions = "\n".join([
-        f"  • {tool.__name__}: {tool.__doc__}" 
-        for tool in CODING_TOOLS
-    ])
-    
-    planning_prompt = f"""{CODE_PLANNER_SYS}
-
-🛠️  Available Tools:
-{tool_descriptions}
-
-💬 User Request:
-{state.get('user_input', '')}
-
-📋 Task:
-Generate a detailed JSON execution plan. Each step must include:
-- "tool": exact tool name to use
-- "args": dictionary of arguments (be specific with filenames, content, etc.)
-- "reason": clear explanation of why this step is necessary
-
-📝 Output Format (JSON only, no additional text):
-[
-  {{
-    "tool": "tool_write_file",
-    "args": {{"file_path": "example.py", "text": "# Your code here"}},
-    "reason": "Create a Python script with the required functionality"
-  }},
-  {{
-    "tool": "tool_run_code",
-    "args": {{"filename": "example.py"}},
-    "reason": "Execute and verify the code works correctly"
-  }}
+CODING_TOOL_NAMES = [
+    "write_file","read_file","list_files","delete_file",
+    "run_code","start_server","stop_server","install_package",
 ]
+_TOOL_DOCS = "\n".join(
+    f"  {n}: {TOOLS[n]['desc']}" for n in CODING_TOOL_NAMES if n in TOOLS
+)
 
-⚠️  Important: Return ONLY the JSON array."""
+# ══════════════════════════════════════════════════════════════
+# PLANNER PROMPT
+# ══════════════════════════════════════════════════════════════
 
-    try:
-        print("⏳ Generating execution plan...")
-        raw_response = _coding_llm.invoke(planning_prompt).content.strip()
-        
-        # Extract JSON from markdown code blocks if present
-        if "```json" in raw_response:
-            raw_response = raw_response.split("```json")[1].split("```")[0].strip()
-        elif "```" in raw_response:
-            raw_response = raw_response.split("```")[1].split("```")[0].strip()
-        
-        plan = json.loads(raw_response)
-        
-        if not isinstance(plan, list):
-            raise ValueError("Plan must be a list of executable steps")
-        
-        # Log successful planning
-        log = state.get("log", [])
-        log.append(f"✅ Generated execution plan with {len(plan)} steps")
-        
-        print(f"✅ Plan ready: {len(plan)} steps identified\n")
-        
-        return {"plan": plan, "log": log}
-        
-    except (json.JSONDecodeError, ValueError) as e:
-        error_message = f"Planning failed: {str(e)}"
-        print(f"\n❌ {error_message}")
-        print(f"📄 Raw output (truncated): {raw_response[:300]}...\n")
-        
-        return {
-            "plan": [],
-            "draft": format_section_header("Planning Error", "❌") + 
-                    f"\n\nI encountered an issue while creating the execution plan:\n\n" +
-                    format_error_message(str(e)) +
-                    f"\n\n💡 **Suggestion:** Try rephrasing your request with more specific details.",
-            "log": state.get("log", []) + [f"❌ Planning error: {str(e)}"]
-        }
+_PLANNER_PROMPT = """\
+You are an expert AI coding agent. All your files MUST go in workspace/{subdir}/.
 
-def node_coding_executor(state: CodingAgentState) -> CodingAgentState:
-    """
-    🛠️  Execution Phase: Execute the planned steps sequentially.
-    Runs each tool and collects results for verification.
-    """
-    print("\n" + "="*60)
-    print("🛠️  EXECUTION PHASE: Running your code tasks...")
-    print("="*60 + "\n")
-    
-    plan = state.get("plan", [])
-    
-    # Handle case where planning failed
-    if not plan:
-        return {
-            "observations": [],
-            "draft": state.get("draft", format_section_header("No Execution", "⚠️") + 
-                          "\n\nNo execution plan was generated. Please try again with a clearer request.")
-        }
-    
-    observations = []
-    execution_log = []
-    total_steps = len(plan)
-    
-    # Execute each step with progress tracking
-    for i, step in enumerate(plan, 1):
-        tool_name = step.get("tool", "unknown")
-        tool_args = step.get("args", {})
-        reason = step.get("reason", "No reason provided")
-        
-        print(f"📍 Step {i}/{total_steps}: {tool_name}")
-        print(f"   Reason: {reason}")
-        
-        tool_invocation = ToolInvocation(tool=tool_name, tool_input=tool_args)
-        
-        try:
-            result = coding_tool_executor.invoke(tool_invocation)
-            observations.append({
-                "step": i,
-                "tool": tool_name,
-                "args": tool_args,
-                "reason": reason,
-                "result": result,
-                "success": "error" not in result
-            })
-            print(format_step_result(i, total_steps, tool_name, True))
-            execution_log.append(f"✅ Step {i}: {tool_name} completed successfully")
-            
-        except Exception as e:
-            error_result = {"error": f"Execution failed: {str(e)}"}
-            observations.append({
-                "step": i,
-                "tool": tool_name,
-                "args": tool_args,
-                "reason": reason,
-                "result": error_result,
-                "success": False
-            })
-            print(format_step_result(i, total_steps, tool_name, False))
-            print(f"   Error: {str(e)}")
-            execution_log.append(f"❌ Step {i}: {tool_name} failed - {str(e)}")
-    
-    print(f"\n✅ Execution complete: {total_steps} steps processed\n")
-    
-    # Generate comprehensive, user-friendly summary
-    draft_prompt = f"""You are a helpful coding assistant. Create a clear, well-formatted response based on the execution results.
+WORKSPACE RULES:
+- Every file_path must start with "{subdir}/" e.g. "{subdir}/app.py"
+- run_code commands are run from workspace root: "python {subdir}/app.py"
+- For React/Vite: create in "{subdir}/app/", run "npm install" then "npm run dev -- --port 5001"
+- install_package BEFORE any import of third-party libs
+- ALWAYS run/test code after writing it
+- For any web app (Flask, FastAPI, Express, React): use start_server so user can visit it
 
-📌 Original Request:
-{state.get('user_input', '')}
+AVAILABLE TOOLS:
+{tool_docs}
 
-📊 Execution Results:
-{json.dumps(observations, indent=2)}
+USER REQUEST:
+{user_input}
 
-📝 Your Response Should Include:
+PLAN REQUIREMENTS — you MUST:
+1. Write all necessary code files with FULL correct content
+2. Install required packages first
+3. Run/test the code
+4. Start a server if it's a web application
 
-1. **Summary**: Brief overview of what was accomplished
-2. **Code Created**: Show any code written (in proper markdown code blocks with syntax highlighting)
-3. **Execution Output**: Display any program output or results
-4. **Errors**: Clearly explain any issues encountered with potential solutions
-5. **Next Steps**: Suggest what the user might want to do next (if applicable)
-
-🎨 Formatting Requirements:
-- Use markdown headers (##, ###) for sections
-- ALL code MUST be in proper markdown code blocks: ```python ... ```
-- Use bullet points for lists
-- Use **bold** for emphasis
-- Use emojis sparingly for visual appeal
-- Keep explanations clear and concise
-
-Make your response professional, friendly, and easy to understand."""
-
-    try:
-        draft = _coding_llm.invoke(draft_prompt).content.strip()
-    except Exception as e:
-        draft = format_section_header("Execution Summary", "📊") + f"""
-
-**Status**: Tasks executed but summary generation failed
-
-**Error**: {str(e)}
-
-**Raw Observations**:
-```json
-{json.dumps(observations, indent=2)}
-```"""
-    
-    log = state.get("log", []) + execution_log
-    
-    return {
-        "observations": observations,
-        "draft": draft,
-        "log": log
-    }
-
-def node_coding_verifier(state: CodingAgentState) -> CodingAgentState:
-    """
-    ✅ Verification Phase: Review results and finalize the response.
-    Ensures quality and adds helpful context for the user.
-    """
-    print("\n" + "="*60)
-    print("✅ VERIFICATION PHASE: Finalizing your response...")
-    print("="*60 + "\n")
-    
-    draft = state.get("draft", "")
-    observations = state.get("observations", [])
-    
-    # Analyze execution results
-    total_steps = len(observations)
-    successful_steps = sum(1 for obs in observations if obs.get("success", False))
-    failed_steps = total_steps - successful_steps
-    
-    # Build status summary
-    status_summary = format_section_header("Execution Summary", "📊") + f"""
-
-**Total Steps**: {total_steps}
-**Successful**: {successful_steps} ✅
-**Failed**: {failed_steps} ❌
+Return ONLY a JSON array, no markdown fences, no explanation:
+[
+  {{"tool":"install_package","args":{{"package":"flask"}}}},
+  {{"tool":"write_file","args":{{"file_path":"{subdir}/app.py","content":"# full code here"}}}},
+  {{"tool":"run_code","args":{{"command":"python {subdir}/app.py","timeout":15}}}},
+  {{"tool":"start_server","args":{{"command":"python {subdir}/app.py","port":5001,"label":"My App"}}}}
+]
 """
-    
-    # Add warnings for errors
-    if failed_steps > 0:
-        status_summary += f"\n⚠️  **Note**: {failed_steps} step(s) encountered errors. Review the details below.\n"
-    
-    # Combine status with draft
-    final = status_summary + "\n" + draft
-    
-    # Add helpful footer
-    final += f"\n\n{format_section_header('Need Help?', '💡')}\n"
-    final += "- Modify the code and run again\n"
-    final += "- Ask me to explain any part\n"
-    final += "- Request additional features or improvements\n"
-    
-    print("✅ Response finalized and ready!\n")
-    
-    return {
-        "final": final,
-        "approved": True
-    }
 
-# ==================== Graph Builder ====================
-def build_coding_agent_graph():
-    """
-    🏗️  Construct the coding agent workflow graph.
-    Creates a pipeline: Planning → Execution → Verification
-    """
-    workflow = StateGraph(CodingAgentState)
-    
-    # Add processing nodes
-    workflow.add_node("coding_planner", node_coding_planner)
-    workflow.add_node("coding_executor", node_coding_executor)
-    workflow.add_node("coding_verifier", node_coding_verifier)
-    
-    # Define workflow sequence
-    workflow.set_entry_point("coding_planner")
-    workflow.add_edge("coding_planner", "coding_executor")
-    workflow.add_edge("coding_executor", "coding_verifier")
-    workflow.add_edge("coding_verifier", END)
-    
-    return workflow.compile()
+# ══════════════════════════════════════════════════════════════
+# HELPERS
+# ══════════════════════════════════════════════════════════════
 
-# ==================== Main Entry Point ====================
-def tool_coding_agent(user_input: str) -> str:
-    """
-    🤖 Coding Agent Tool - Main Entry Point
-    
-    Handles all coding-related tasks through a structured workflow:
-    1. Plans the task by breaking it into steps
-    2. Executes each step using appropriate tools
-    3. Verifies results and generates a user-friendly response
-    
-    Args:
-        user_input: The user's coding request or question
-        
-    Returns:
-        A formatted string containing the complete response
-    """
-    print("\n" + "="*60)
-    print("🤖 CODING AGENT ACTIVATED")
-    print("="*60)
-    print(f"📨 Request: {user_input[:100]}{'...' if len(user_input) > 100 else ''}\n")
-    
+def _emit(on_event, evt):
+    if callable(on_event):
+        try: on_event(evt)
+        except: pass
+
+# ══════════════════════════════════════════════════════════════
+# NODES
+# ══════════════════════════════════════════════════════════════
+
+def node_planner(state: CodingState) -> Dict:
+    on_event = state.get("_on_event")
+    subdir   = state.get("subdir", CODING_DIR)
+    _emit(on_event, {"type":"agent_step","step":"planner",
+                     "label":f"📝 Planning — files → workspace/{subdir}/"})
+
+    raw = _llm_invoke(_PLANNER_PROMPT.format(
+        subdir=subdir, tool_docs=_TOOL_DOCS, user_input=state["user_input"]
+    ))
+
+    if "```" in raw:
+        m = re.search(r"```(?:json)?\s*([\s\S]+?)```", raw)
+        raw = m.group(1).strip() if m else raw.split("```")[1].strip()
+
     try:
-        # Build and execute the workflow graph
-        coding_graph = build_coding_agent_graph()
-        
-        # Initialize state with all required fields
-        initial_state = {
-            "user_input": user_input,
-            "plan": [],
-            "observations": [],
-            "draft": "",
-            "final": "",
-            "approved": False,
-            "log": []
-        }
-        
-        # Run the workflow
-        result = coding_graph.invoke(initial_state)
-        
-        # Extract and return the final response
-        final_output = result.get("final", format_section_header("Error", "❌") + 
-                                 "\n\nThe coding agent did not produce a final result. Please try again.")
-        
-        print("\n" + "="*60)
-        print("🎉 CODING AGENT COMPLETED")
-        print("="*60 + "\n")
-        
-        return final_output
-        
-    except Exception as e:
-        error_msg = format_section_header("Agent Error", "❌") + f"""
+        plan = json.loads(raw)
+        if not isinstance(plan, list): plan = []
+    except Exception:
+        plan = []
 
-An unexpected error occurred while processing your request:
+    # Enforce subdir prefix
+    for step in plan:
+        fp = step.get("args",{}).get("file_path","")
+        if fp and not fp.startswith(subdir):
+            step["args"]["file_path"] = f"{subdir}/{fp.lstrip('/\\')}"
 
-{format_error_message(str(e))}
+    _emit(on_event, {"type":"plan_ready","steps":len(plan),"plan":plan})
+    return {"plan": plan}
 
-💡 **Suggestions**:
-- Check if all required tools are available
-- Verify your request is clear and specific
-- Try breaking down complex requests into smaller tasks
 
-🔧 **Technical Details**:
-```
-{str(e)}
-```"""
-        
-        print(f"\n❌ Fatal Error: {str(e)}\n")
-        return error_msg
+def node_executor(state: CodingState) -> Dict:
+    on_event     = state.get("_on_event")
+    plan         = state.get("plan", [])
+    observations: List[Dict[str, Any]] = []
+
+    _tools_module.set_event_callback(on_event)
+
+    for i, step in enumerate(plan):
+        tool_name = step.get("tool","")
+        args      = step.get("args",{}) or {}
+        _emit(on_event, {"type":"step_start","index":i+1,"total":len(plan),
+                         "tool":tool_name,"args":args,
+                         "label":f"▶ Step {i+1}/{len(plan)}: {tool_name}"})
+        tool_entry = TOOLS.get(tool_name)
+        try:
+            result = tool_entry["func"](args) if tool_entry else {"status":"error","error":f"Unknown: {tool_name}"}
+        except Exception as exc:
+            result = {"status":"error","error":str(exc)}
+
+        success = result.get("status") != "error" and "error" not in result
+        _emit(on_event, {"type":"step_done","index":i+1,"tool":tool_name,
+                         "success":success,"result":result})
+        observations.append({"step":i+1,"tool":tool_name,"args":args,
+                              "result":result,"success":success})
+
+    _tools_module.set_event_callback(None)
+
+    _emit(on_event, {"type":"agent_step","step":"drafting","label":"✍️ Writing explanation…"})
+
+    obs_summary = json.dumps([{
+        "step":o["step"],"tool":o["tool"],"success":o["success"],
+        "stdout":o["result"].get("stdout","")[:600],
+        "stderr":o["result"].get("stderr","")[:300],
+        "error": o["result"].get("error","")[:300],
+        "message":o["result"].get("message","")[:200],
+    } for o in observations], indent=2)
+
+    subdir = state.get("subdir", CODING_DIR)
+    draft = _llm_invoke(f"""\
+You are a senior software engineer explaining your work clearly.
+
+USER REQUEST: {state['user_input']}
+FILES LOCATION: workspace/{subdir}/
+EXECUTION RESULTS: {obs_summary}
+
+Write a thorough explanation with these sections:
+## What Was Built
+## How It Works
+## Output / Result
+## How to Use It
+
+Show key code in fenced blocks. Mention the workspace/{subdir}/ path.
+If a server was started, tell the user to check the Preview tab.
+""")
+    return {"observations":observations,"events":list(state.get("events",[])),"draft":draft}
+
+
+def node_debugger(state: CodingState) -> Dict:
+    observations = state.get("observations", [])
+    retries      = state.get("retries", 0)
+    on_event     = state.get("_on_event")
+    failed = [o for o in observations if not o["success"]]
+    if not failed or retries >= 2:
+        return {}
+    _emit(on_event, {"type":"agent_step","step":"debugger","label":"🔧 Auto-debugging…"})
+    err_sum = json.dumps([{"tool":o["tool"],"args":o["args"],
+        "error":o["result"].get("error","") or o["result"].get("stderr","")} for o in failed], indent=2)
+    fix = _llm_invoke(f"""\
+Debug these failures:
+{err_sum}
+Request: {state.get('user_input','')}
+Subdir: workspace/{state.get('subdir',CODING_DIR)}/
+Explain root cause and provide corrected code. Use fenced code blocks.
+""")
+    return {"draft":(state.get("draft") or "")+"\n\n---\n### 🔧 Auto-Debug\n\n"+fix,
+            "retries":retries+1}
+
+
+def node_verifier(state: CodingState) -> Dict:
+    on_event = state.get("_on_event")
+    obs      = state.get("observations", [])
+    success  = sum(1 for o in obs if o["success"])
+    fail     = len(obs) - success
+    subdir   = state.get("subdir", CODING_DIR)
+    _emit(on_event, {"type":"execution_summary","total":len(obs),"success":success,"failed":fail})
+
+    from sandbox import ws_list_servers
+    servers = ws_list_servers().get("servers", {})
+    server_note = ""
+    if servers:
+        urls = " · ".join(f"[{v['url']}]({v['url']})" for v in servers.values())
+        server_note = f"\n\n🌐 **Live:** {urls} — open the **Preview** tab in the Workspace panel"
+
+    final = (state.get("draft") or "") + (
+        f"\n\n---\n✅ **{success}/{len(obs)} steps succeeded**"
+        + (f" ({fail} failed)" if fail else "")
+        + f"\n📁 Files in `workspace/{subdir}/`"
+        + server_note
+    )
+    return {"final": final}
+
+
+# ══════════════════════════════════════════════════════════════
+# GRAPH
+# ══════════════════════════════════════════════════════════════
+
+def _build_graph():
+    g = StateGraph(CodingState)
+    g.add_node("planner",  node_planner)
+    g.add_node("executor", node_executor)
+    g.add_node("debugger", node_debugger)
+    g.add_node("verifier", node_verifier)
+    g.set_entry_point("planner")
+    g.add_edge("planner",  "executor")
+    g.add_edge("executor", "debugger")
+    g.add_edge("debugger", "verifier")
+    g.add_edge("verifier", END)
+    return g.compile()
+
+
+# ══════════════════════════════════════════════════════════════
+# PUBLIC ENTRY POINT
+# ══════════════════════════════════════════════════════════════
+
+def tool_coding_agent(
+    user_input: str,
+    on_event:   Optional[Callable[[Dict[str, Any]], None]] = None,
+    subdir:     str = CODING_DIR,
+) -> str:
+    """
+    Run the sandboxed coding agent.
+    Files go to workspace/{subdir}/ (default: workspace/coding/).
+    Always explains, runs, and starts a server for web apps.
+    """
+    (BASE_DIR / subdir).mkdir(parents=True, exist_ok=True)
+    result = _build_graph().invoke({
+        "user_input":user_input,"subdir":subdir,
+        "plan":[],"observations":[],"events":[],"draft":"","final":"","retries":0,
+        "_on_event":on_event,
+    })
+    return result.get("final","No response generated.")
