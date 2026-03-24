@@ -1,5 +1,0 @@
-Hello! I'm ready to help you summarize a document. 
-
-Previously, attempts to process '@algorithms-18-00712-v2.pdf' and '@RL_index_iae_1.pdf' failed because no relevant information was found. 
-
-Please provide a valid, accessible file for processing, and I'll assist you right away.
