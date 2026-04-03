@@ -31,7 +31,7 @@ for _d in (BASE_DIR / CODING_DIR, BASE_DIR / RESEARCH_DIR):
 
 # ── LLM ────────────────────────────────────────────────────────
 _coding_llm = ChatCerebras(
-    model="qwen-3-coder-480b", temperature=0.2,
+    model="qwen-3-235b-a22b-instruct-2507", temperature=0.2,
     api_key=os.getenv("API_KEY"), max_tokens=6000, top_p=0.8,
 )
 
