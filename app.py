@@ -1,8 +1,7 @@
 import os, json, queue, traceback, logging, threading, shutil
 from datetime import datetime
 from flask import Flask, request, jsonify, Response, stream_with_context
-from flask_cors import CORS
-from langchain_chroma import Chroma
+from flask_cors import CORS # This import might not be needed if _vectorstore is initialized in config
 from werkzeug.utils import secure_filename
 from agent import run_agent_once, ingest_knowledge_base, backfill_rag_metadata
 from sandbox import ws_list_files, ws_read_file, ws_reset, BASE_DIR
@@ -20,13 +19,6 @@ class Config:
 app.config.from_object(Config)
 CORS(app, resources={r"/api/*": {"origins": app.config['CORS_ORIGINS']}})
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-
-try:
-    core.config._vectorstore = Chroma(collection_name=core.config.MEM_COLLECTION, embedding_function=core.config._embedding_fn, persist_directory=core.config.PERSIST_DIR)
-except Exception as e:
-    logger.warning(f"Detected ChromaDB corruption. Resetting {core.config.PERSIST_DIR}. Error: {e}")
-    shutil.rmtree(core.config.PERSIST_DIR, ignore_errors=True)
-    core.config._vectorstore = Chroma(collection_name=core.config.MEM_COLLECTION, embedding_function=core.config._embedding_fn, persist_directory=core.config.PERSIST_DIR)
 
 ALLOWED = {'.pdf','.doc','.docx','.txt','.csv','.xlsx','.xls','.ppt','.pptx'}
 

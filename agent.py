@@ -23,29 +23,6 @@ from tools import TOOLS
 
 logger = logging.getLogger(__name__)
 
-# ══════════════════════════════════════════════════════════════
-# RETRY WRAPPER
-# ══════════════════════════════════════════════════════════════
-
-def _llm_invoke(prompt: str, max_retries: int = 4, base_delay: float = 1.5) -> str:
-    last_exc = None
-    for attempt in range(max_retries):
-        try:
-            return _llm.invoke(prompt).content.strip()
-        except Exception as exc:
-            last_exc = exc
-            err = str(exc).lower()
-            transient = any(k in err for k in [
-                "server error","503","502","504","529",
-                "rate limit","overloaded","timeout","connection","try again",
-            ])
-            if not transient:
-                raise
-            delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
-            logger.warning(f"LLM transient error (attempt {attempt+1}/{max_retries}): {exc!r}. Retry in {delay:.1f}s")
-            time.sleep(delay)
-    raise last_exc  # type: ignore[misc]
-
 
 # ══════════════════════════════════════════════════════════════
 # @ MENTION HELPERS
@@ -444,7 +421,7 @@ def node_direct_answer(state: GraphState) -> GraphState:
     mem_text = "\n".join(mem_list)
     _log(state, f"🧠 Memory: Found {len(mem_list)} relevant memories. Evaluating…")
     try:
-        response = _llm_invoke(DIRECT_ANSWER_SYS + "\nRelevant memory:\n" + mem_text + "\nUser input:\n" + state.get("user_input",""))
+        response = _llm.invoke(DIRECT_ANSWER_SYS + "\nRelevant memory:\n" + mem_text + "\nUser input:\n" + state.get("user_input","")).content.strip()
     except Exception as exc:
         _log(state, f"⚠️ Memory: LLM error ({exc!r}). Skipping to Planner.")
         return {**state, "log": state["log"]}
@@ -506,13 +483,13 @@ def node_planner(state: GraphState) -> GraphState:
     mem_list = mem_recall(user_input, k=4)
     mem_text = "\n".join(mem_list) if mem_list else "<none>"
     try:
-        distilled = _llm_invoke(
+        distilled = _llm.invoke(
             INTENT_DISTILLER_PROMPT
             + "\nChat History:\n" + history_str
             + "\nRelevant memory:\n" + mem_text
             + "\nUser input:\n" + user_input
             + "\nFile Path: null"
-        )
+        ).content.strip()
     except Exception as exc:
         _log(state, f"⚠️ Planner: Distiller failed ({exc!r}). Using raw input.")
         distilled = user_input
@@ -536,12 +513,12 @@ def node_planner(state: GraphState) -> GraphState:
 
     tool_list = "\n".join(f"- {n}: {m['desc']}" for n,m in TOOLS.items())
     try:
-        raw = _llm_invoke(
+        raw = _llm.invoke(
             PLANNER_SYS.replace("{tool_list}", tool_list)
             + "\nRelevant memory:\n" + mem_text
             + "\nUser task:\n" + distilled_clean
             + '\nRespond with ONLY JSON: {"steps":[...]}\n'
-        )
+        ).content.strip()
     except Exception as exc:
         _log(state, f"⚠️ Planner: LLM failed after retries ({exc!r}). Empty plan.")
         return {"plan":[], "log": state["log"], "history": history}
@@ -668,8 +645,8 @@ def node_executor(state: GraphState) -> GraphState:
                     f"- Be thorough and well-structured\n"
                     f"- Do NOT say 'No relevant info found'"
                 )
-                try:
-                    draft = _llm_invoke(synthesis_prompt)
+                try: # Use the LLM router for synthesis
+                    draft = _llm.invoke(synthesis_prompt).content.strip()
                 except Exception as exc:
                     _log(state, f"⚠️ Synthesis LLM failed ({exc!r}). Using raw chunks.")
                     draft = f"Here are the relevant excerpts:\n\n{raw_chunks}"
@@ -697,7 +674,7 @@ def node_executor(state: GraphState) -> GraphState:
                             f"Web Results:\n{web_text}\n\n"
                             f"Write a clear, well-structured answer. Cite sources inline."
                         )
-                        draft = _llm_invoke(web_prompt)
+                        draft = _llm.invoke(web_prompt)
                         observations.append({
                             "id": "web_fallback", "tool": "web_search",
                             "args": {}, "observation": {"results": web_text}
@@ -726,8 +703,8 @@ def node_executor(state: GraphState) -> GraphState:
     if not real_tool_ran:
         # No tools ran — answer directly from LLM (greetings, casual, general knowledge)
         _log(state, "💬 Executor: Answering directly from knowledge…")
-        try:
-            draft = _llm_invoke(
+        try: # Use the LLM router for direct answers
+            draft = _llm.invoke(
                 "You are a helpful, friendly AI assistant.\n"
                 f"Conversation history context: {state.get('history', [])[-2:]}\n\n"
                 f"User message: {state.get('user_input', '')}\n\n"
@@ -736,7 +713,7 @@ def node_executor(state: GraphState) -> GraphState:
                 "For simple factual questions: answer directly and accurately. "
                 "For casual conversation: be friendly. "
                 "Never say 'No relevant info found' — always give a real answer."
-            )
+            ).content.strip()
         except Exception as exc:
             _log(state, f"⚠️ Direct LLM failed: {exc!r}")
             draft = "Hi! I'm here to help. What would you like to know?"
@@ -749,7 +726,7 @@ def node_executor(state: GraphState) -> GraphState:
         f"Observations: {json.dumps(observations, ensure_ascii=False)}"
     )
     try:
-        draft = _llm_invoke(f"{EXECUTOR_SYS}\n\n{context}\n\nWrite the answer.")
+        draft = _llm.invoke(f"{EXECUTOR_SYS}\n\n{context}\n\nWrite the answer.").content.strip()
     except Exception as exc:
         _log(state, f"⚠️ Executor: LLM failed ({exc!r}). Using raw observations.")
         draft = json.dumps(observations, ensure_ascii=False)
@@ -794,7 +771,7 @@ def node_verifier(state: GraphState) -> GraphState:
         + "\nObservations:\n" + json.dumps(obs, ensure_ascii=False)
     )
     try:
-        raw = _llm_invoke(prompt)
+        raw = _llm.invoke(prompt).content.strip()
     except Exception as exc:
         _log(state, f"⚠️ Verifier: LLM failed ({exc!r}). Approving draft as-is.")
         return {"final": state.get("draft",""), "log": state["log"]}

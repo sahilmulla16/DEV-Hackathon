@@ -16,7 +16,7 @@ import random
 from typing import TypedDict, List, Dict, Any, Optional, Callable
 
 from langgraph.graph import StateGraph, END
-from langchain_cerebras import ChatCerebras
+from core.config import _llm # Import the LLMRouter instance
 
 import tools as _tools_module
 from tools import TOOLS
@@ -28,24 +28,6 @@ RESEARCH_DIR = "research"
 
 for _d in (BASE_DIR / CODING_DIR, BASE_DIR / RESEARCH_DIR):
     _d.mkdir(parents=True, exist_ok=True)
-
-# ── LLM ────────────────────────────────────────────────────────
-_coding_llm = ChatCerebras(
-    model="qwen-3-235b-a22b-instruct-2507", temperature=0.2,
-    api_key=os.getenv("API_KEY"), max_tokens=6000, top_p=0.8,
-)
-
-def _llm_invoke(prompt: str, retries: int = 3, base_delay: float = 1.5) -> str:
-    last = None
-    for attempt in range(retries):
-        try:
-            return _coding_llm.invoke(prompt).content.strip()
-        except Exception as exc:
-            last = exc
-            if not any(k in str(exc).lower() for k in ["server error","503","529","rate limit","timeout","try again"]):
-                raise
-            time.sleep(base_delay * (2 ** attempt) + random.uniform(0, 0.4))
-    raise last
 
 # ══════════════════════════════════════════════════════════════
 # STATE
@@ -124,10 +106,10 @@ def node_planner(state: CodingState) -> Dict:
     subdir   = state.get("subdir", CODING_DIR)
     _emit(on_event, {"type":"agent_step","step":"planner",
                      "label":f"📝 Planning — files → workspace/{subdir}/"})
-
-    raw = _llm_invoke(_PLANNER_PROMPT.format(
+    # Use the LLM router for planning
+    raw = _llm.invoke(_PLANNER_PROMPT.format(
         subdir=subdir, tool_docs=_TOOL_DOCS, user_input=state["user_input"]
-    ))
+    )).content.strip()
 
     if "```" in raw:
         m = re.search(r"```(?:json)?\s*([\s\S]+?)```", raw)
@@ -187,7 +169,7 @@ def node_executor(state: CodingState) -> Dict:
     } for o in observations], indent=2)
 
     subdir = state.get("subdir", CODING_DIR)
-    draft = _llm_invoke(f"""\
+    draft = _llm.invoke(f"""\
 You are a senior software engineer explaining your work clearly.
 
 USER REQUEST: {state['user_input']}
@@ -201,8 +183,8 @@ Write a thorough explanation with these sections:
 ## How to Use It
 
 Show key code in fenced blocks. Mention the workspace/{subdir}/ path.
-If a server was started, tell the user to check the Preview tab.
-""")
+If a server was started, tell the user to check the Preview tab. # Use the LLM router for drafting
+""").content.strip()
     return {"observations":observations,"events":list(state.get("events",[])),"draft":draft}
 
 
@@ -214,15 +196,15 @@ def node_debugger(state: CodingState) -> Dict:
     if not failed or retries >= 2:
         return {}
     _emit(on_event, {"type":"agent_step","step":"debugger","label":"🔧 Auto-debugging…"})
-    err_sum = json.dumps([{"tool":o["tool"],"args":o["args"],
-        "error":o["result"].get("error","") or o["result"].get("stderr","")} for o in failed], indent=2)
-    fix = _llm_invoke(f"""\
+    err_sum = json.dumps([{"tool":o["tool"],"args":o["args"], # Use the LLM router for debugging
+        "error":o["result"].get("error","") or o["result"].get("stderr","")} for o in failed], indent=2) # Use the LLM router for debugging
+    fix = _llm.invoke(f"""\
 Debug these failures:
 {err_sum}
 Request: {state.get('user_input','')}
 Subdir: workspace/{state.get('subdir',CODING_DIR)}/
 Explain root cause and provide corrected code. Use fenced code blocks.
-""")
+""").content.strip()
     return {"draft":(state.get("draft") or "")+"\n\n---\n### 🔧 Auto-Debug\n\n"+fix,
             "retries":retries+1}
 

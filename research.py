@@ -29,39 +29,10 @@ from langchain_cerebras import ChatCerebras
 from langchain_chroma import Chroma
 from langgraph.graph import StateGraph, END
 
-from core.config import _embedding_fn, RAG_PERSIST_DIR, RAG_COLLECTION
+from core.config import _llm, _embedding_fn, RAG_PERSIST_DIR, RAG_COLLECTION
 from tools import tool_web_search, tool_write_file
 
 logger = logging.getLogger(__name__)
-
-# ══════════════════════════════════════════════════════════════
-# LLM
-# ══════════════════════════════════════════════════════════════
-
-_research_llm = ChatCerebras(
-    model=os.environ.get("RESEARCH_MODEL", "qwen-3-235b-a22b-instruct-2507"),
-    temperature=0.3,
-    api_key=os.getenv("API_KEY"),
-    max_tokens=4000,
-)
-
-
-def _llm(prompt: str, retries: int = 3, base_delay: float = 1.5) -> str:
-    """Invoke LLM with exponential-backoff retry on transient errors."""
-    last = None
-    for attempt in range(retries):
-        try:
-            return _research_llm.invoke(prompt).content.strip()
-        except Exception as exc:
-            last = exc
-            err = str(exc).lower()
-            if not any(k in err for k in ["429","503","529","rate limit","timeout","try again"]):
-                raise
-            delay = base_delay * (2 ** attempt) + random.uniform(0, 0.4)
-            logger.warning(f"Research LLM transient error (attempt {attempt+1}): {exc!r}. Retry in {delay:.1f}s")
-            time.sleep(delay)
-    raise last  # type: ignore
-
 
 # ══════════════════════════════════════════════════════════════
 # RAG HELPER
@@ -230,7 +201,7 @@ Rules:
 
 Return ONLY a numbered list. One question per line."""
 
-    response = _llm(prompt)
+    response = _llm.invoke(prompt).content.strip()
     questions = [
         re.sub(r'^[\d\.\-\*\s]+', '', q).strip()
         for q in response.splitlines()
@@ -289,8 +260,8 @@ Instructions:
 - Cite sources inline like [Source: title or URL]
 - 2–4 paragraphs
 - Do NOT invent facts not present in sources"""
-
-        answer = _llm(answer_prompt)
+        # Use the LLM router for answering questions
+        answer = _llm.invoke(answer_prompt).content.strip()
         findings.append({
             "question": question,
             "answer":   answer,
@@ -407,7 +378,7 @@ Research Data to incorporate:
 Write the complete report now. Use markdown formatting.
 Be thorough, professional, and cite sources where relevant."""
 
-    draft = _llm(prompt)
+    draft = _llm.invoke(prompt).content.strip()
     _log(state, "✅ Research: Report written.")
     return {"draft": draft, "log": state["log"]}
 
