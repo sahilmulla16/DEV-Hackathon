@@ -1,81 +1,25 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import Chat from './components/Chat';
-import FileUpload from './components/FileUpload';
 import KnowledgeBase from './components/KnowledgeBase';
 import WorkspacePanel from './components/WorkspacePanel';
 import AgentLog from './components/AgentLog';
+import { useDragResize } from './components/useDragResize';
+
+import { PanelHeader } from './components/PanelHeader';
 import {
     Menu, X, Sparkles, Monitor, TerminalSquare,
     PanelLeftClose, PanelLeftOpen, Cpu,
 } from 'lucide-react';
 import './App.css';
 
-/* ─── Drag-resize hook ───────────────────────────────────── */
-function useDragResize({ direction, minSize, maxSize, defaultSize, storageKey }) {
-    const [size, setSize] = useState(() => {
-        const saved = localStorage.getItem(storageKey);
-        return saved ? parseInt(saved, 10) : defaultSize;
-    });
-    const dragging = useRef(false);
-    const startPos = useRef(0);
-    const startSize = useRef(0);
-
-    const onMouseDown = useCallback((e) => {
-        e.preventDefault();
-        dragging.current = true;
-        startPos.current  = direction === 'x' ? e.clientX : e.clientY;
-        startSize.current = size;
-        document.body.style.cursor     = 'col-resize';
-        document.body.style.userSelect = 'none';
-    }, [size, direction]);
-
-    useEffect(() => {
-        const onMove = (e) => {
-            if (!dragging.current) return;
-            const delta = e.clientX - startPos.current;
-            const raw   = startSize.current + (direction === 'x' ? delta : -delta);
-            setSize(Math.min(maxSize, Math.max(minSize, raw)));
-        };
-        const onUp = () => {
-            if (!dragging.current) return;
-            dragging.current = false;
-            document.body.style.cursor     = '';
-            document.body.style.userSelect = '';
-            localStorage.setItem(storageKey, String(size));
-        };
-        window.addEventListener('mousemove', onMove);
-        window.addEventListener('mouseup',   onUp);
-        return () => {
-            window.removeEventListener('mousemove', onMove);
-            window.removeEventListener('mouseup',   onUp);
-        };
-    }, [direction, minSize, maxSize, size, storageKey]);
-
-    return { size, setSize, onMouseDown };
-}
-
-/* ─── Panel header ───────────────────────────────────────── */
-const PanelHeader = ({ icon, title, accent, actions }) => (
-    <div className="panel-header">
-        <div className="panel-header-left">
-            <div className="panel-header-icon" style={{ '--accent': accent || '#f5a623' }}>{icon}</div>
-            <span className="panel-header-title">{title}</span>
-        </div>
-        <div className="panel-header-actions">{actions}</div>
-    </div>
-);
-
 /* ═══════════════════════════════════════════════════════════
    MAIN APP
 ═══════════════════════════════════════════════════════════ */
 export default function App() {
-    const [uploadStatus,   setUploadStatus]  = useState('');
-    const [isUploading,    setIsUploading]   = useState(false);
     const [chatKey,        setChatKey]       = useState(Date.now());
     const [agentLog,       setAgentLog]      = useState([]);
     const [isLogLoading,   setIsLogLoading]  = useState(false);
     const [pendingMention, setPendingMention]= useState(null);
-    const [kbKey,          setKbKey]         = useState(0);
 
     // Left sidebar
     const [sidebarOpen,    setSidebarOpen]   = useState(true);
@@ -96,16 +40,9 @@ export default function App() {
     const sidebar = useDragResize({ direction:'x', minSize:200, maxSize:480, defaultSize:280, storageKey:'sidebar-width' });
     const rightW  = useDragResize({ direction:'x', minSize:300, maxSize:700, defaultSize:400, storageKey:'right-panel-width' });
 
-    // Handlers
-    const handleUploadSuccess = s => {
-        setUploadStatus(s); setIsUploading(false);
-        setKbKey(v => v + 1);
-        setTimeout(() => setUploadStatus(''), 5000);
-    };
-    const handleUploadError = e => { setUploadStatus(`Upload failed: ${e}`); setIsUploading(false); };
-
     const handleNewChat = () => {
-        setChatKey(Date.now()); setUploadStatus(''); setAgentLog([]);
+        setChatKey(Date.now());
+        setAgentLog([]);
         setWorkspaceEvents([]); setOutputLines([]); setIsRunning(false);
         setMobileSidebar(false);
     };
@@ -222,15 +159,9 @@ export default function App() {
                         <button onClick={handleNewChat} className="new-chat-button">
                             <Sparkles size={14}/> New Chat
                         </button>
-                        <section className="sidebar-section">
-                            <div className="sidebar-section-label">Upload Knowledge</div>
-                            <FileUpload onUploadSuccess={handleUploadSuccess} onUploadError={handleUploadError} setIsUploading={setIsUploading}/>
-                            {isUploading && <p className="status-message">⏳ Uploading…</p>}
-                            {uploadStatus && !isUploading && <p className="status-message">{uploadStatus}</p>}
-                        </section>
-                        <KnowledgeBase key={kbKey} onMentionFile={filename => {
-                            setPendingMention(filename);
-                            setTimeout(() => setPendingMention(null), 300);
+                        <KnowledgeBase onMentionFile={filename => {
+                            setPendingMention(`@${filename}`);
+                            setTimeout(() => setPendingMention(null), 350);
                         }}/>
                     </div>
                     {sidebarOpen && (

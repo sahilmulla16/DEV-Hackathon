@@ -136,6 +136,7 @@ def _kill_proc(proc: subprocess.Popen) -> None:
 # ── Code execution ─────────────────────────────────────────────
 def ws_run_code(command: str, timeout: int = EXEC_TIMEOUT,
                 env_extra: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    run_dir = BASE_DIR / "coding"
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"}
     if env_extra:
         env.update(env_extra)
@@ -143,7 +144,7 @@ def ws_run_code(command: str, timeout: int = EXEC_TIMEOUT,
     try:
         proc = subprocess.run(
             command, shell=True, capture_output=True, text=True,
-            cwd=str(BASE_DIR), timeout=timeout, env=env,
+            cwd=str(run_dir), timeout=timeout, env=env
         )
         elapsed = round(time.time() - start, 2)
         return {
@@ -162,14 +163,18 @@ def ws_run_code(command: str, timeout: int = EXEC_TIMEOUT,
 
 
 def ws_run_code_streaming(command: str,
-                          timeout: int = EXEC_TIMEOUT) -> Generator[Dict[str, Any], None, None]:
+                          timeout: int = EXEC_TIMEOUT,
+                          env_extra: Optional[Dict[str, str]] = None) -> Generator[Dict[str, Any], None, None]:
+    run_dir = BASE_DIR / "coding"
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"}
+    if env_extra:
+        env.update(env_extra)
     start = time.time()
     try:
         proc = subprocess.Popen(
             command, shell=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, cwd=str(BASE_DIR), env=env,
+            text=True, cwd=str(run_dir), env=env,
             **_popen_flags(),
         )
 

@@ -224,11 +224,8 @@ const AgentLog = ({ log = [], isLoading = false }) => {
                     style={{ display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 14px',height:'52px',flexShrink:0,background:'rgba(16,16,16,0.95)',borderBottom:'1px solid rgba(255,255,255,0.07)',cursor:'pointer',userSelect:'none',gap:'8px' }}
                 >
                     <div style={{ display:'flex',alignItems:'center',gap:'8px' }}>
-                        {/* Icon box */}
-                        <div style={{ width:'26px',height:'26px',background:'rgba(245,166,35,0.12)',border:'1px solid rgba(245,166,35,0.22)',borderRadius:'6px',display:'flex',alignItems:'center',justifyContent:'center',color:'#f5a623' }}>
-                            <TerminalSquare size={13}/>
-                        </div>
-                        <span style={{ fontSize:'0.82rem',fontWeight:600,color:'#ececec' }}>System Logs</span>
+                        
+                        
 
                         {/* LIVE badge */}
                         {isLoading && (
@@ -262,6 +259,7 @@ const AgentLog = ({ log = [], isLoading = false }) => {
 
                 {/* ── Phase bar ── */}
                 {!collapsed && phase && <PhaseBar phase={phase} isActive={isLoading}/>}
+                
 
                 {/* ── Log body ── */}
                 <div style={{

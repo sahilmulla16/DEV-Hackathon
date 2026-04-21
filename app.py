@@ -1,6 +1,6 @@
-import os, json, queue, traceback, logging, threading, shutil
+import os, json, queue, traceback, logging, threading, shutil, time
 from datetime import datetime
-from flask import Flask, request, jsonify, Response, stream_with_context
+from flask import Flask, request, jsonify, Response, stream_with_context, send_from_directory
 from flask_cors import CORS
 from langchain_chroma import Chroma
 from werkzeug.utils import secure_filename
@@ -20,14 +20,23 @@ class Config:
 app.config.from_object(Config)
 CORS(app, resources={r"/api/*": {"origins": app.config['CORS_ORIGINS']}})
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-
+# --- ChromaDB Initialization with Auto-Reset on Corruption ---
 try:
+    logger.info("Attempting to load ChromaDB vectorstore for agent memory...")
     core.config._vectorstore = Chroma(collection_name=core.config.MEM_COLLECTION, embedding_function=core.config._embedding_fn, persist_directory=core.config.PERSIST_DIR)
+    logger.info("ChromaDB memory store loaded successfully.")
 except Exception as e:
-    logger.warning(f"Detected ChromaDB corruption. Resetting {core.config.PERSIST_DIR}. Error: {e}")
-    shutil.rmtree(core.config.PERSIST_DIR, ignore_errors=True)
-    core.config._vectorstore = Chroma(collection_name=core.config.MEM_COLLECTION, embedding_function=core.config._embedding_fn, persist_directory=core.config.PERSIST_DIR)
-
+    # Check for the specific PanicException message or class name
+    if "PanicException" in str(e) or "range start index" in str(e):
+        logger.warning("ChromaDB panicked on startup. This indicates corrupted data. Deleting and recreating the memory persistence directory.")
+        if os.path.exists(core.config.PERSIST_DIR):
+            shutil.rmtree(core.config.PERSIST_DIR)
+            time.sleep(0.5) 
+        logger.info(f"Directory '{core.config.PERSIST_DIR}' removed. Retrying ChromaDB initialization.")
+        core.config._vectorstore = Chroma(collection_name=core.config.MEM_COLLECTION, embedding_function=core.config._embedding_fn, persist_directory=core.config.PERSIST_DIR)
+        logger.info("ChromaDB memory store re-initialized successfully after reset.")
+    else:
+        raise  # Re-raise other exceptions
 ALLOWED = {'.pdf','.doc','.docx','.txt','.csv','.xlsx','.xls','.ppt','.pptx'}
 
 # ── Startup: patch any old RAG chunks missing 'filename' metadata ──
@@ -45,14 +54,19 @@ def _sse(ev,d): return f"event: {ev}\ndata: {json.dumps(d)}\n\n"
 
 @app.route('/api/chat/stream', methods=['POST'])
 def chat_stream():
-    data=request.json or {}; user_input=data.get('message','').strip(); history=data.get('history',[])
+    data=request.json or {}
+    user_input=data.get('message','').strip()
+    history=data.get('history',[])
+    connector_configs=data.get('connector_configs',{})  # env vars from active connectors
+
     if not user_input: return jsonify({"error":"No message"}),400
+
     q=queue.Queue()
     def on_log(e): q.put({"_e":"log","entry":e})
     def on_ws(e): q.put({"_e":"workspace_event",**e})
     def run():
         try:
-            r=run_agent_once(user_input=user_input,history=history,on_log=on_log,on_workspace_event=on_ws)
+            r=run_agent_once(user_input=user_input,history=history,on_log=on_log,on_workspace_event=on_ws, connector_configs=connector_configs)
             q.put({"_e":"answer","text":r.get("final","No answer.")})
         except Exception as exc:
             logger.error(f"Agent error: {exc}\n{traceback.format_exc()}")
@@ -73,9 +87,10 @@ def chat_stream():
 @app.route('/api/chat', methods=['POST'])
 def chat():
     d=request.json or {}; u=d.get('message','').strip(); h=d.get('history',[])
+    connector_configs = d.get('connector_configs', {})
     if not u: return jsonify({"error":"No message"}),400
     try:
-        r=run_agent_once(user_input=u,history=h)
+        r=run_agent_once(user_input=u,history=h, connector_configs=connector_configs)
         return jsonify({"answer":r.get("final","Error."),"log":r.get("log",[])})
     except Exception as exc:
         logger.error(f"{exc}"); return jsonify({"error":"Internal error."}),500
@@ -85,6 +100,18 @@ def chat():
 def ws_files(): return jsonify(ws_list_files())
 @app.route('/api/workspace/files/<path:fp>',methods=['GET'])
 def ws_file_get(fp): r=ws_read_file(fp); return (jsonify(r),404) if r["status"]=="error" else jsonify(r)
+
+@app.route('/api/workspace/view/<path:filepath>')
+def serve_workspace_file(filepath):
+    """Serves a file from the workspace directory."""
+    # Security: Ensure the path is within the workspace
+    safe_path = os.path.abspath(os.path.join(BASE_DIR, filepath))
+    if not str(safe_path).startswith(os.path.abspath(BASE_DIR)):
+        return "Path traversal detected", 400
+    
+    directory = os.path.dirname(safe_path)
+    filename = os.path.basename(safe_path)
+    return send_from_directory(directory, filename)
 
 @app.route('/api/workspace/files/<path:fp>',methods=['POST'])
 def ws_file_write(fp):
@@ -101,12 +128,13 @@ def ws_run():
     from sandbox import ws_run_code_streaming
     data    = request.json or {}
     command = data.get('command','').strip()
+    env_extra = data.get('env', None)
     if not command:
         return jsonify({"error":"No command"}), 400
     q = queue.Queue()
     def _run():
         try:
-            for evt in ws_run_code_streaming(command):
+            for evt in ws_run_code_streaming(command, env_extra=env_extra):
                 q.put(evt)
         except Exception as exc:
             q.put({"type":"stderr","line":str(exc)})
@@ -150,15 +178,40 @@ def del_file(filename):
 
 @app.route('/api/upload',methods=['POST'])
 def upload():
-    if 'file' not in request.files: return jsonify({"error":"No file"}),400
-    f=request.files['file']
-    if not f.filename: return jsonify({"error":"No filename"}),400
-    ext=os.path.splitext(f.filename)[1].lower()
-    if ext not in ALLOWED: return jsonify({"error":f"Unsupported: {ext}"}),400
-    fn=secure_filename(f.filename); fp=os.path.join(app.config['UPLOAD_FOLDER'],fn)
-    f.save(fp)
-    try: ingest_knowledge_base(fp); return jsonify({"status":f"'{fn}' uploaded. Use @{fn} to reference it.","file":_fi(fn)})
-    except Exception as exc: logger.error(exc); return jsonify({"error":f"Failed to process '{fn}'."}),500
+    if 'file' not in request.files:
+        return jsonify({"error": "No file part in the request"}), 400
+    files = request.files.getlist('file')
+    if not files or all(f.filename == '' for f in files):
+        return jsonify({"error": "No selected files"}), 400
+
+    results = []
+    errors = []
+    for f in files:
+        if f and f.filename:
+            ext = os.path.splitext(f.filename)[1].lower()
+            if ext not in ALLOWED:
+                errors.append(f"Unsupported file type: {f.filename}")
+                continue
+            
+            fn = secure_filename(f.filename)
+            fp = os.path.join(app.config['UPLOAD_FOLDER'], fn)
+            f.save(fp)
+            
+            try:
+                ingest_knowledge_base(fp)
+                results.append({"status": f"'{fn}' uploaded.", "file": _fi(fn)})
+            except Exception as exc:
+                logger.error(f"Error processing {fn}: {exc}")
+                errors.append(f"Failed to process '{fn}'.")
+
+    if errors:
+        error_message = ". ".join(errors)
+        if results:
+            return jsonify({"status": f"Partial success: {len(results)} uploaded, {len(errors)} failed.", "error": error_message, "files": [r['file'] for r in results]}), 207
+        return jsonify({"error": error_message}), 500
+
+    status_message = f"{len(results)} file(s) uploaded successfully."
+    return jsonify({"status": status_message, "files": [r['file'] for r in results]})
 
 @app.route('/api/health',methods=['GET'])
 def health(): return jsonify({"status":"ok","workspace":str(BASE_DIR)}),200
@@ -172,3 +225,9 @@ def rag_backfill():
 def status(): return jsonify({"activeAgents":4,"tasksInProgress":6,"systemStatus":"Online","agents":["LLaMA","Cerebras","Research","Critic"]})
 @app.route('/api/features',methods=['GET'])
 def features(): return jsonify([{"id":1,"icon":"code","title":"Sandboxed Execution","description":"All code runs inside workspace/."},{"id":2,"icon":"search","title":"Web Search","description":"Real-time DuckDuckGo search."},{"id":3,"icon":"file-text","title":"File System","description":"Create, edit, run files in the sandbox."}])
+
+@app.route('/api/connectors', methods=['GET'])
+def get_connectors():
+    """Returns a list of available connectors for slash commands."""
+    from tools import CONNECTORS_DEF
+    return jsonify(CONNECTORS_DEF)

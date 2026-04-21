@@ -9,6 +9,9 @@ from __future__ import annotations
 import os
 import ast
 import re
+import json
+import urllib.request
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable
 
 from langchain_chroma import Chroma
@@ -21,9 +24,63 @@ from core.config import _embedding_fn, RAG_PERSIST_DIR, RAG_COLLECTION
 from sandbox import (
     ws_write_file, ws_read_file, ws_list_files, ws_delete_file,
     ws_run_code, ws_run_code_streaming,
-    ws_start_server, ws_stop_server, ws_list_servers,
-    ws_install_package, ws_reset,
+    ws_start_server, ws_stop_server, ws_list_servers, IS_WINDOWS,
+    ws_reset, BASE_DIR,
 )
+
+
+# Python representation of frontend's CONNECTORS array, for backend logic.
+# This allows the planner to know about available connectors.
+CONNECTORS_DEF = [
+    {
+        "id": 'github', "name": 'GitHub',
+        "description": 'Manage repos, issues, PRs & code. Use for "create an issue", "list PRs".',
+        "keywords": ["repo", "repository", "issue", "pull request", "pr", "branch"],
+        "mcp_command": "npx -y @modelcontextprotocol/server-github",
+    },
+    {
+        "id": 'gmail', "name": 'Gmail',
+        "description": 'Read, compose & send emails. Use for "send an email", "check my inbox".',
+        "keywords": ["email", "mail", "inbox", "gmail", "send email", "read email", "compose"],
+        "mcp_command": "npx @gongrzhe/server-gmail-autoauth-mcp",
+    },
+    {
+        "id": 'google-calendar', "name": 'Google Calendar',
+        "description": 'Schedule & manage events. Use for "schedule a meeting", "check my calendar".',
+        "keywords": ["meeting", "event", "schedule", "calendar", "appointment"],
+        "mcp_command": "npx @gongrzhe/server-calendar-autoauth-mcp",
+    },
+    {
+        "id": 'perplexity', "name": 'Perplexity',
+        "description": 'Real-time web search & research. Use for "search perplexity for X".',
+        "keywords": ["perplexity", "search", "research", "ask"],
+        "mcp_command": "npx -y @chatmcp/server-perplexity-ask",
+    },
+    {
+        "id": 'google-drive', "name": 'Google Drive',
+        "description": 'Upload, read & manage Drive files. Use for "find file in Drive", "read doc from Drive".',
+        "keywords": ["drive", "gdrive", "file", "doc", "sheet", "slide", "document"],
+        "mcp_command": "npx -y @modelcontextprotocol/server-gdrive",
+    },
+    {
+        "id": 'slack', "name": 'Slack',
+        "description": 'Send messages & manage channels. Use for "send a slack to #channel".',
+        "keywords": ["slack", "message", "channel", "dm"],
+        "mcp_command": "npx -y @modelcontextprotocol/server-slack",
+    },
+    {
+        "id": 'notion', "name": 'Notion',
+        "description": 'Read & write Notion pages/databases. Use for "create a page in Notion".',
+        "keywords": ["notion", "page", "database", "write"],
+        "mcp_command": "npx -y @modelcontextprotocol/server-notion",
+    },
+    {
+        "id": 'postgres', "name": 'PostgreSQL',
+        "description": 'Query & manage database tables. Use for "run a SQL query".',
+        "keywords": ["sql", "database", "query", "postgres", "table", "select"],
+        "mcp_command": "npx -y @modelcontextprotocol/server-postgres",
+    },
+]
 
 
 # ══════════════════════════════════════════════════════════════
@@ -89,6 +146,69 @@ def tool_calculator(expression: str) -> Dict[str, Any]:
 
 
 # ══════════════════════════════════════════════════════════════
+# IMAGE SEARCH & DOWNLOAD
+# ══════════════════════════════════════════════════════════════
+
+def tool_image_search(query: str, subdir: str = "coding", max_results: int = 1) -> Dict[str, Any]:
+    """
+    Search for images on the web and download them into the workspace.
+    Saves images to workspace/{subdir}/images/.
+    Returns a list of local paths to the downloaded images, relative to the workspace root.
+    """
+    _emit({"type": "image_search_start", "query": query})
+
+    image_dir = BASE_DIR / subdir / "images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with DDGS() as ddgs:
+            # Fetch more to have options if some downloads fail
+            image_results = list(ddgs.images(query, max_results=max_results * 3))
+
+            downloaded_paths = []
+            count = 0
+            for r in image_results:
+                if count >= max_results:
+                    break
+
+                image_url = r.get("image")
+                if not image_url:
+                    continue
+
+                try:
+                    # Create a safe filename
+                    file_ext = Path(image_url).suffix.split('?')[0] or '.jpg'
+                    if file_ext.lower() not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                        file_ext = '.jpg'
+
+                    safe_query = re.sub(r'[^\w\-]', '_', query.lower())
+                    filename = f"{safe_query[:20]}_{count+1}{file_ext}"
+                    local_path = image_dir / filename
+
+                    opener = urllib.request.build_opener()
+                    opener.addheaders = [('User-agent', 'Mozilla/5.0')]
+                    urllib.request.install_opener(opener)
+                    urllib.request.urlretrieve(image_url, local_path)
+
+                    relative_path = str(local_path.relative_to(BASE_DIR)).replace('\\', '/')
+                    downloaded_paths.append(relative_path)
+                    _emit({"type": "image_download", "url": image_url, "path": relative_path})
+                    count += 1
+                except Exception as download_exc:
+                    logger.warning(f"Image download failed for {image_url}: {download_exc}")
+                    continue
+
+            if not downloaded_paths:
+                return {"status": "error", "error": "Could not download any images for the query."}
+
+            return {"status": "success", "image_paths": downloaded_paths, "message": f"Downloaded {len(downloaded_paths)} image(s) to {str(image_dir.relative_to(BASE_DIR))}"}
+
+    except Exception as e:
+        logger.error(f"Image search failed: {e}")
+        return {"status": "error", "error": f"image_search_failed: {e}"}
+
+
+# ══════════════════════════════════════════════════════════════
 # SANDBOXED WORKSPACE FILE TOOLS
 # ══════════════════════════════════════════════════════════════
 
@@ -134,17 +254,18 @@ def tool_delete_file(file_path: str) -> Dict[str, Any]:
 # CODE EXECUTION  (streaming live output)
 # ══════════════════════════════════════════════════════════════
 
-def tool_run_code(command: str, timeout: int = 30) -> Dict[str, Any]:
+def tool_run_code(command: str, timeout: int = 30, env_extra: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """
-    Execute a shell command inside workspace/ with live output streaming.
+    Execute a shell command inside workspace/coding/ with live output streaming.
     stdout lines are emitted as events in real time.
     Returns the complete { status, stdout, stderr, exit_code } when done.
     """
     _emit({"type": "run_start", "command": command})
     stdout_lines: List[str] = []
     stderr_lines: List[str] = []
+    exit_code = -1  # Default to failure
 
-    for event in ws_run_code_streaming(command, timeout=timeout):
+    for event in ws_run_code_streaming(command, timeout=timeout, env_extra=env_extra):
         if event["type"] == "stdout":
             stdout_lines.append(event["line"])
             _emit({"type": "stdout", "line": event["line"]})
@@ -152,6 +273,7 @@ def tool_run_code(command: str, timeout: int = 30) -> Dict[str, Any]:
             stderr_lines.append(event["line"])
             _emit({"type": "stderr", "line": event["line"]})
         elif event["type"] == "done":
+            exit_code = event["exit_code"]
             _emit({
                 "type":      "run_done",
                 "exit_code": event["exit_code"],
@@ -161,10 +283,11 @@ def tool_run_code(command: str, timeout: int = 30) -> Dict[str, Any]:
     stdout = "\n".join(stdout_lines)
     stderr = "\n".join(stderr_lines)
     return {
-        "status":  "success" if not stderr_lines else "error",
+        "status":  "success" if exit_code == 0 else "error",
         "stdout":  stdout,
         "stderr":  stderr,
         "output":  stdout,      # backwards compat alias
+        "exit_code": exit_code,
     }
 
 
@@ -201,9 +324,42 @@ def tool_list_servers() -> Dict[str, Any]:
 def tool_install_package(package: str) -> Dict[str, Any]:
     """pip install a Python package inside the sandbox."""
     _emit({"type": "install", "package": package})
-    result = ws_install_package(package)
+    if not re.match(r'^[a-zA-Z0-9_\-\.\[\]>=<!, ]+$', package):
+        return {"status": "error", "error": f"Invalid package name: {package!r}"}
+    # Use tool_run_code to get streaming output and command echoing
+    flag = "" if IS_WINDOWS else " --break-system-packages"
+    command = f"pip install {package} --quiet{flag}"
+    result = tool_run_code(command, timeout=120)
     _emit({"type": "install_done", "package": package, "status": result["status"]})
     return result
+
+
+# ══════════════════════════════════════════════════════════════
+# MCP CONNECTOR TOOL
+# ══════════════════════════════════════════════════════════════
+
+def tool_connector_tool(connector_id: str, user_input: str, env_extra: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """
+    Execute a command for a configured external connector (GitHub, Gmail, etc.)
+    using the Model Context Protocol (MCP).
+    """
+    conn_def = next((c for c in CONNECTORS_DEF if c["id"] == connector_id), None)
+    if not conn_def:
+        return {"status": "error", "error": f"Unknown connector_id: {connector_id}"}
+
+    # The MCP command is executed with the user input piped to stdin.
+    # The MCP tool is expected to have the necessary credentials from env vars.
+    # Note: This is a simplified execution model.
+    if not user_input:
+        command = conn_def['mcp_command']
+    else:
+        # Using json.dumps to get double quotes, which is more compatible
+        # with Windows' `echo` command than shlex.quote's single quotes.
+        escaped_input = json.dumps(user_input)
+        command = f"echo {escaped_input} | {conn_def['mcp_command']}"
+
+    # We use tool_run_code to get proper event streaming in the UI
+    return tool_run_code(command, timeout=90, env_extra=env_extra)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -390,6 +546,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "desc": "Evaluate arithmetic expressions.",
         "func": lambda a: tool_calculator(a.get("expression","")),
     },
+    "image_search": {
+        "desc": "Search for images and download them to workspace/{subdir}/images/. Returns local file paths. Args: query (string), subdir (string, default 'coding'), max_results (int, default 1).",
+        "func": lambda a: tool_image_search(a.get("query",""), a.get("subdir", "coding"), int(a.get("max_results", 1))),
+    },
 
     # ── RAG / Knowledge base ────────────────────────────────
     "rag_search": {
@@ -456,6 +616,16 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "install_package": {
         "desc": "pip install a Python package in the sandbox. Args: package (string).",
         "func": lambda a: tool_install_package(a.get("package","")),
+    },
+
+    # ── External Connectors (MCP) ───────────────────────────
+    "connector_tool": {
+        "desc": (
+            "Interface with an external connected tool (e.g., GitHub, Gmail) to perform specific actions. "
+            "This tool is dynamically exposed based on user-configured connectors. "
+            "Args: connector_id (string), user_input (string)."
+        ),
+        "func": lambda a: tool_connector_tool(a.get("connector_id",""), a.get("user_input","")),
     },
 
     # ── Coding agent (sub-agent) ────────────────────────────

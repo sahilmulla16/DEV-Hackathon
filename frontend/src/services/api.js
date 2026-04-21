@@ -43,20 +43,42 @@ export const postChatMessage = (message, history) =>
  *   error            { message }
  *   done             {}
  */
-export const postChatStream = async (message, history) => {
+export const postChatStream = async (message, history, connector_configs = {}) => {
     const response = await fetch(`${API_BASE_URL}/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, history }),
+        body: JSON.stringify({ message, history, connector_configs }),
     });
     if (!response.ok) throw new Error(`Stream error: HTTP ${response.status}`);
     return response.body.getReader();
 };
 
+/**
+ * Test a connector by running its MCP command with credentials.
+ * Returns a ReadableStream reader.
+ * @param {string} command The MCP command to run.
+ * @param {object} env The environment variables (credentials).
+ */
+export const testConnector = async (command, env) => {
+    const response = await fetch(`${API_BASE_URL}/workspace/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command, env }),
+    });
+    if (!response.ok) throw new Error(`Stream error: HTTP ${response.status}`);
+    return response.body.getReader();
+};
 
 // ════════════════════════════════════════════════════════════════
 // KNOWLEDGE BASE  (uploaded files — src/uploads/)
 // ════════════════════════════════════════════════════════════════
+
+/**
+ * Get the list of available connectors for slash commands.
+ * Returns: [{ id, name, description }]
+ */
+export const getConnectors = () =>
+    fetchJson(`${API_BASE_URL}/connectors`);
 
 /**
  * List all uploaded knowledge-base files.

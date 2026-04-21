@@ -19,7 +19,7 @@ from langchain_community.document_loaders import (
 from core.config import _llm, _embedding_fn, RAG_PERSIST_DIR, RAG_COLLECTION, MAX_REFLECTIONS
 from core.utils import safe_json_loads
 from core.memory import mem_add, mem_recall
-from tools import TOOLS
+from frontend.src.components.tools import TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +72,14 @@ If memory does NOT contain enough info, respond ONLY with: 'NO_DIRECT_ANSWER'
 INTENT_DISTILLER_PROMPT = """
 You are an intent distiller. Extract the user's real actionable task in one sentence.
 
+{active_connectors_prompt_block}
+
 RULES:
-- If the user references a file (@filename or "in the document"), note it: "Search file X for: <question>"
+- If the user's request clearly matches an active connector's purpose (e.g., "create an issue" for GitHub), output the task directly, mentioning the connector's domain. Example: "Use GitHub to create an issue..."
+- If the user references a file (@filename.ext or "in the document") AND the task is NOT related to a connector, note it: "Search file X for: <question>"
 - For greetings / casual chat: output the message as-is
 - For factual questions ("what is X", "explain Y", "how does Z work"): output the question directly — do NOT add tool instructions
+- For image requests ("find a picture", "show me an image"): output "Find an image of: <topic>"
 - For code requests: output "Write code to: <task>"
 - ONLY if the user explicitly asks for a full REPORT, DEEP RESEARCH, or INVESTIGATION (e.g. "deep research on X", "write a report about X", "do a full analysis of X"): output "Research report on: <topic>"
 
@@ -142,47 +146,65 @@ def _is_research_request(text: str) -> bool:
     return any(k in low for k in _RESEARCH_KEYWORDS)
 
 PLANNER_SYS = """
-You are the Planner in an autonomous multi-agent system. Choose the RIGHT tool.
+You are the Planner in an autonomous multi-agent system. Choose the RIGHT tool for the user's task.
 
 TOOL SELECTION — read carefully:
 
-1. `web_search` — Search the live web for facts, explanations, current info.
-   USE for: "what is X", "explain X", "how does X work", "who is X", general knowledge questions.
+1. `connector_tool` — Use for simple, direct actions on external services (e.g., "list my github issues", "send an email").
+   - Look for specific connector tools in the list below.
+   - If the task involves creating files or running shell commands first, use `coding_agent_tool` instead.
 
-2. `rag_search` — Search uploaded documents.
-   USE when: user @mentioned a file, OR question might be in uploaded docs.
+2. `web_search` — Search the live web for facts, explanations, current info.
+   - USE for: "what is X", "explain X", "how does X work", "who is X", general knowledge questions.
+   - DO NOT use for finding images. Use `image_search` for that.
 
-3. `research_agent_tool` — Full multi-source research REPORT (takes 1-2 minutes).
-   USE ONLY when user EXPLICITLY asks for a report/deep research/investigation:
-   e.g. "deep research on X", "write a full report on X", "do a comprehensive analysis of X"
-   DO NOT use for simple explanations, summaries, or factual questions.
+3. `rag_search` — Search uploaded documents.
+   - USE when: user @mentioned a file, OR question might be in uploaded docs.
 
-4. `coding_agent_tool` — Write, execute, debug code.
-   USE when: user asks to write code, build something, fix a bug.
+4. `research_agent_tool` — Full multi-source research REPORT (takes 1-2 minutes).
+   - USE ONLY when user EXPLICITLY asks for a report/deep research/investigation.
+   - DO NOT use for simple explanations, summaries, or factual questions.
 
-5. `calculator` — Math only.
+5. `coding_agent_tool` — A powerful sub-agent that can write code, manage files, and use other tools to complete complex software tasks.
+   - USE for any multi-step coding task: writing scripts, building websites, or complex git workflows like creating a new repository and pushing initial files.
+   - This tool can orchestrate other tools, like `write_file`, `run_code`, and even `connector_tool`.
+   - This tool can also use `image_search` to find images for websites it builds.
+   - Example: "create a new repo 'test' and add a README", "build a website about dogs".
 
-6. No tool — Greetings, casual chat, questions you can answer from knowledge.
+6. `image_search` — Find and download images from the web.
+   - USE for: "find a picture of", "show me an image of", "get a photo of".
+
+7. `calculator` — Math only.
+
+8. No tool — Greetings, casual chat, questions you can answer from your own knowledge.
 
 DECISION GUIDE:
-- "explain X" / "what is X" / "how does X work" → web_search OR no tool
-- "summarize X" / "brief overview of X" → web_search OR no tool
-- "deep research on X" / "write a report on X" → research_agent_tool
-- "@file.pdf tell me about X" → rag_search with source_file
-- "write a python script" → coding_agent_tool
+- "find a picture of a cat" -> `image_search`
+- "create a new repo 'test'" → `coding_agent_tool`
+- "list my github issues" → `connector_tool` with `connector_id='github'`
+- "explain what a neural network is" → `web_search`
+- "summarize the uploaded file @report.pdf" → `rag_search`
+- "write a full report on climate change" → `research_agent_tool`
+- "write a python script to parse a CSV file" → `coding_agent_tool`
 
 Available tools:
 {tool_list}
 
-Return STRICT JSON: {{"steps":[{{"id":1,"thought":"...","tool":"...","args":{{...}},"output_key":"..."}}]}}
+You MUST ONLY use tools from the "Available tools" list. Do not invent tools or use tools not listed.
+
+Return ONLY a JSON object matching this schema: {{"steps":[{{"id":int,"thought":str,"tool":str,"args":dict,"output_key":str}}]}}
 """
 
 EXECUTOR_SYS = """
-You are the Executor. Write a helpful, natural answer from the tool observations.
-- If observations contain search results, integrate them into a clear answer.
-- If no tools were used (no_tool), answer the user's question directly and naturally from your own knowledge.
-- For greetings, casual chat, or simple questions — respond warmly and naturally. Do NOT say "No relevant info found".
-- Provide ONLY the direct answer — no meta-commentary about tools or the system.
+You are the Executor. Your task is to synthesize a helpful, natural answer for the user based on the provided tool observations.
+
+Follow these rules carefully:
+1.  **Synthesize, Don't Invent**: Base your answer *only* on the information in the `Observations`. Do not add information that is not present.
+2.  **Handle Search Results**: If the observations contain search results (from `web_search` or `rag_search`), integrate them into a clear, well-structured answer. Cite sources if available.
+3.  **Handle Image Results**: If an observation from `image_search` contains `image_paths`, you MUST display the image using markdown, like this: `!Image`. Replace `path/to/image.jpg` with the first path from the `image_paths` list.
+4.  **Handle Empty/Unhelpful Observations**: If a tool was used (e.g., `connector_tool`) but the `stdout` or `observation` is empty, contains only boilerplate, or seems unrelated to the user's request, state that the tool was run but did not provide useful information. You can suggest checking the tool's configuration. Example: "I tried to fetch your emails, but the Gmail connector didn't return any data. Please ensure it is configured correctly in the settings."
+5.  **Handle No Tool**: If no tools were used (`no_tool`), answer the user's question directly from your own knowledge. This applies to greetings, casual chat, or simple factual questions.
+6.  **Be Direct**: Provide ONLY the answer. Do not include meta-commentary about the tools used or the system's internal process.
 """
 
 VERIFIER_SYS = """
@@ -412,6 +434,7 @@ class GraphState(TypedDict, total=False):
     file_path:           Optional[str]
     log:                 List[str]
     history:             List[Any]
+    connector_configs:   Optional[Dict[str, Any]]
     _on_log:             Optional[Callable]   # streaming log callback
     _on_workspace_event: Optional[Callable]   # streaming workspace event callback
 
@@ -434,6 +457,44 @@ def _log(state: GraphState, entry: str) -> None:
 # ══════════════════════════════════════════════════════════════
 # NODES
 # ══════════════════════════════════════════════════════════════
+def node_slash_command_parser(state: GraphState) -> Dict:
+    """Fast-path for /<connector> commands."""
+    user_input = state.get("user_input", "").strip()
+    if not user_input.startswith('/'):
+        return {}  # Not a slash command, continue to normal planning
+
+    from frontend.src.components.tools import CONNECTORS_DEF
+    connector_configs = state.get("connector_configs") or {}
+    active_connectors = list(connector_configs.keys())
+
+    # Sort by length descending to match longest prefix first (e.g., 'google-calendar' before 'google')
+    active_connectors.sort(key=len, reverse=True)
+
+    for connector_id in active_connectors:
+        prefix = f"/{connector_id.lower()}"
+        # Match must be the full command or followed by a space
+        if user_input.lower() == prefix or user_input.lower().startswith(prefix + ' '):
+            conn_def = next((c for c in CONNECTORS_DEF if c["id"] == connector_id), None)
+            if not conn_def:
+                continue
+
+            # The rest of the input is everything after the command itself
+            rest_of_input = user_input[len(prefix):].strip()
+
+            _log(state, f"⚡️ Slash command detected: /{connector_id}. Routing directly to connector.")
+            plan = [{
+                "id": 1,
+                "tool": "connector_tool",
+                "args": {"connector_id": conn_def['id'], "user_input": rest_of_input},
+                "thought": f"User issued a direct slash command for the {conn_def['name']} connector."
+            }]
+            return {"plan": plan, "log": state["log"]}
+
+    command_part = user_input.lstrip('/').split(' ', 1)[0].lower()
+    _log(state, f"⚠️ Slash command '/{command_part}' not found or not active. Treating as normal input.")
+    return {}
+
+
 
 def node_direct_answer(state: GraphState) -> GraphState:
     _log(state, "🧠 Memory: Checking long-term memory for a direct answer…")
@@ -460,12 +521,16 @@ def node_planner(state: GraphState) -> GraphState:
     file_path       = state.get("file_path")
     mentioned_files = state.get("mentioned_files", [])
     history         = state.get("history", [])
+    connector_configs = state.get("connector_configs") or {}
+    active_connectors = list(connector_configs.keys())
 
     history_str = "".join(
         f"User: {p[0]}\nAgent: {p[1]}\n"
         for p in history[-5:]
         if isinstance(p, (list,tuple)) and len(p)==2
     )
+
+    _log(state, f"🔌 Planner: Active connectors detected: {active_connectors if active_connectors else 'None'}")
 
     # Fast-path: uploaded file
     if file_path:
@@ -505,13 +570,29 @@ def node_planner(state: GraphState) -> GraphState:
     _log(state, "🎯 Planner: Distilling user intent…")
     mem_list = mem_recall(user_input, k=4)
     mem_text = "\n".join(mem_list) if mem_list else "<none>"
+
+    # --- DYNAMIC CONNECTORS FOR DISTILLER ---
+    from frontend.src.components.tools import CONNECTORS_DEF
+    active_connectors_prompt_block = ""
+    if active_connectors:
+        connector_descs = []
+        for cid in active_connectors:
+            cdef = next((c for c in CONNECTORS_DEF if c["id"] == cid), None)
+            if cdef:
+                keywords = cdef.get('keywords', [])
+                keywords_str = f" (Keywords: {', '.join(keywords)})" if keywords else ""
+                connector_descs.append(f"- {cdef['name']} ({cdef['id']}): {cdef['description']}{keywords_str}")
+        if connector_descs:
+            active_connectors_prompt_block = "ACTIVE CONNECTORS:\n" + "\n".join(connector_descs)
+    # ---
+
     try:
+        distiller_prompt = INTENT_DISTILLER_PROMPT.replace("{active_connectors_prompt_block}", active_connectors_prompt_block)
         distilled = _llm_invoke(
-            INTENT_DISTILLER_PROMPT
+            distiller_prompt
             + "\nChat History:\n" + history_str
             + "\nRelevant memory:\n" + mem_text
             + "\nUser input:\n" + user_input
-            + "\nFile Path: null"
         )
     except Exception as exc:
         _log(state, f"⚠️ Planner: Distiller failed ({exc!r}). Using raw input.")
@@ -534,10 +615,35 @@ def node_planner(state: GraphState) -> GraphState:
     _log(state, f"🎯 Planner: Intent → '{distilled_clean[:90]}{'…' if len(distilled_clean)>90 else ''}'")
     _log(state, "📝 Planner: Building execution plan…")
 
-    tool_list = "\n".join(f"- {n}: {m['desc']}" for n,m in TOOLS.items())
+    # --- DYNAMIC TOOL LIST ---
+    from frontend.src.components.tools import CONNECTORS_DEF
+
+    # Base tools that are always available
+    base_tools = {
+        "web_search", "rag_search", "research_agent_tool",
+        "coding_agent_tool", "calculator", "image_search", "write_file", "read_file",
+        "list_files", "delete_file", "run_code", "start_server",
+        "stop_server", "list_servers", "install_package"
+    }
+    dynamic_tool_descriptions = []
+    for name in sorted(base_tools):
+        if name in TOOLS:
+            dynamic_tool_descriptions.append(f"- {name}: {TOOLS[name]['desc']}")
+
+    # Add active connectors to the tool list for the planner
+    for connector_id in active_connectors:
+        conn_def = next((c for c in CONNECTORS_DEF if c["id"] == connector_id), None)
+        if conn_def:
+            tool_desc = f"Use the '{conn_def['name']}' connector for tasks like: {conn_def['description']}"
+            dynamic_tool_descriptions.append(
+                f"- connector_tool (args: connector_id='{conn_def['id']}', user_input='...'): {tool_desc}"
+            )
+    tool_list_str = "\n".join(dynamic_tool_descriptions)
+    # --- END DYNAMIC TOOL LIST ---
+
     try:
         raw = _llm_invoke(
-            PLANNER_SYS.replace("{tool_list}", tool_list)
+            PLANNER_SYS.replace("{tool_list}", tool_list_str)
             + "\nRelevant memory:\n" + mem_text
             + "\nUser task:\n" + distilled_clean
             + '\nRespond with ONLY JSON: {"steps":[...]}\n'
@@ -550,31 +656,74 @@ def node_planner(state: GraphState) -> GraphState:
     steps  = parsed.get("steps",[]) if isinstance(parsed,dict) else []
 
     # ── Guard: correct wrong tool choices ────────────────────────
+    clean_input = state.get("clean_input", user_input)
+    user_task_lower = (distilled_clean or user_input).lower()
+
+    # Helper to find a matching connector for the user's task
+    def find_matching_connector():
+        for connector_id in active_connectors:
+            conn_def = next((c for c in CONNECTORS_DEF if c["id"] == connector_id), None)
+            if conn_def:
+                # Keywords: id, name, and phrases in quotes from description
+                trigger_phrases = [conn_def['id'].lower(), conn_def['name'].lower()]
+                if conn_def.get('description'):
+                    desc_triggers = _re.findall(r'\"(.*?)\"', conn_def['description'])
+                    trigger_phrases.extend([p.lower() for p in desc_triggers])
+
+                if any(phrase in user_task_lower for phrase in trigger_phrases):
+                    return conn_def  # Found a match
+        return None
+
+    # Guard 1: Empty plan. If a connector matches, use it.
+    if not steps:
+        matching_conn = find_matching_connector()
+        if matching_conn:
+            connector_id = matching_conn['id']
+            _log(state, f"🔄 Planner: Corrected empty plan → connector_tool for '{connector_id}'")
+            steps = [{
+                "id": 1,
+                "tool": "connector_tool",
+                "args": {"connector_id": connector_id, "user_input": clean_input},
+                "thought": f"Redirected: Empty plan → connector_tool. User task matches '{matching_conn['name']}' connector."
+            }]
+
+    # Guard 2: Non-empty plan. Check for individual mis-selections.
     for s in steps:
-        tool = s.get("tool","")
+        tool = s.get("tool", "")
+
+        # If coding_agent_tool is chosen, check if a connector could have been used instead.
+        if tool == "coding_agent_tool":
+            matching_conn = find_matching_connector()
+            if matching_conn:
+                connector_id = matching_conn['id']
+                _log(state, f"🔄 Planner: Corrected coding_agent_tool → connector_tool for '{connector_id}'")
+                s["tool"] = "connector_tool"
+                s["args"] = {"connector_id": connector_id, "user_input": clean_input}
+                s["thought"] = f"Redirected: coding_agent_tool → connector_tool. User task matches '{matching_conn['name']}' connector."
+                continue  # Step corrected, move to next one
 
         # research_agent_tool: only allow if user EXPLICITLY asked for a full report
         if tool == "research_agent_tool" and not _is_research_report_request(user_input):
             # Redirect to web_search — it's a simple question
             query = distilled_clean or user_input
-            s["tool"]    = "web_search"
-            s["args"]    = {"query": query, "max_results": 4}
+            s["tool"] = "web_search"
+            s["args"] = {"query": query, "max_results": 4}
             s["thought"] = "Redirected: research_agent_tool → web_search (not an explicit report request)"
             _log(state, "🔄 Planner: Corrected research_agent_tool → web_search (simple question)")
 
         # rag_search with no file context + explicit report request → research_agent_tool
         elif tool == "rag_search" and not mentioned_files and not file_path and _is_research_report_request(user_input):
             mode = _detect_research_mode(user_input)
-            s["tool"]    = "research_agent_tool"
-            s["args"]    = {"user_input": user_input, "mode": mode}
+            s["tool"] = "research_agent_tool"
+            s["args"] = {"user_input": user_input, "mode": mode}
             s["thought"] = f"Redirected: rag_search → research_agent_tool ({mode})"
             _log(state, f"🔄 Planner: Corrected rag_search → research_agent_tool ({mode})")
 
     _log(state, f"📝 Planner: Plan ready — {len(steps)} step(s).")
     for s in steps:
-        tool = s.get("tool","none")
-        thought = s.get("thought","")[:70]
-        _log(state, f"   ↳ Step {s.get('id','?')}: [{tool}] {thought}{'…' if len(s.get('thought',''))>70 else ''}")
+        tool = s.get("tool", "none")
+        thought = s.get("thought", "")
+        _log(state, f"   ↳ Step {s.get('id','?')}: [{tool}] {thought}")
     return {"plan": steps, "log": state["log"], "history": history}
 
 
@@ -599,7 +748,28 @@ def node_executor(state: GraphState) -> GraphState:
                     obs = _tca(
                         args.get("user_input", ""),
                         on_event=state.get("_on_workspace_event"),
+                        connector_configs=state.get("connector_configs"),
                     )
+                # If calling a connector, pass the specific env vars for that connector
+                elif tool_name == "connector_tool":
+                    from frontend.src.components.tools import tool_connector_tool as _tct
+                    connector_id = args.get("connector_id", "")
+                    connector_configs = state.get("connector_configs", {})
+
+                    # Guardrail: Check if the connector is actually configured before running.
+                    if not connector_configs or not connector_configs.get(connector_id):
+                        _log(state, f"❌ Executor: Connector '{connector_id}' called but is not configured.")
+                        obs = {"error": f"Connector '{connector_id}' is not configured. Please add your credentials in the Connectors settings and try again."}
+                    else:
+                        # The connector_configs from the frontend are structured as:
+                        # { "github": { "GITHUB_TOKEN": "...", "GITHUB_USER": "..." } }
+                        # We pass the inner dictionary as env_extra.
+                        env_vars = connector_configs.get(connector_id, {})
+                        obs = _tct(
+                            connector_id=connector_id,
+                            user_input=args.get("user_input", ""),
+                            env_extra=env_vars
+                        )
                 # If calling the research sub-agent, forward log callback
                 elif tool_name == "research_agent_tool":
                     from research import tool_research_agent as _tra
@@ -682,7 +852,7 @@ def node_executor(state: GraphState) -> GraphState:
                 # RAG empty → auto web search fallback
                 _log(state, "⚠️ Executor: RAG empty — falling back to web search…")
                 try:
-                    from tools import tool_web_search as _ws
+                    from frontend.src.components.tools import tool_web_search as _ws
                     web_result = _ws(state.get("clean_input") or state.get("user_input", ""), max_results=5)
                     if web_result.get("results"):
                         parts = [
@@ -856,14 +1026,27 @@ def should_plan_or_finish(state: GraphState) -> str:
 
 def build_graph():
     wf = StateGraph(GraphState)
+    wf.add_node("slash_parser",  node_slash_command_parser)
     wf.add_node("direct_answer", node_direct_answer)
     wf.add_node("planner",       node_planner)
     wf.add_node("executor",      node_executor)
     wf.add_node("verifier",      node_verifier)
     wf.add_node("finalizer",     finalizer)
     wf.add_node("memory",        node_memory_update)
-    wf.set_entry_point("direct_answer")
-    wf.add_conditional_edges("direct_answer", should_plan_or_finish, {"finish":"memory","plan":"planner"})
+
+    wf.set_entry_point("slash_parser")
+
+    def should_continue_planning(state: GraphState) -> str:
+        """If slash_parser created a plan, execute it. Otherwise, continue to normal flow."""
+        return "execute" if state.get("plan") else "plan"
+
+    wf.add_conditional_edges(
+        "slash_parser",
+        should_continue_planning,
+        {"execute": "executor", "plan": "direct_answer"}
+    )
+
+    wf.add_conditional_edges("direct_answer", should_plan_or_finish, {"finish": "memory", "plan": "planner"})
     wf.add_edge("planner","executor")
     wf.add_edge("executor","verifier")
     wf.add_conditional_edges("verifier", _should_reflect, {"replan":"planner","approved":"memory","give_up":"finalizer"})
@@ -880,6 +1063,7 @@ def run_agent_once(
     user_input:          str,
     history:             List[Any],
     file_path:           Optional[str] = None,
+    connector_configs:   Optional[Dict[str, Any]] = None,
     on_log:              Optional[Callable[[str], None]] = None,
     on_workspace_event:  Optional[Callable[[Dict], None]] = None,
 ) -> Dict[str, Any]:
@@ -897,6 +1081,7 @@ def run_agent_once(
         "log":                 [],
         "history":             history,
         "file_path":           file_path,
+        "connector_configs":   connector_configs,
         "_on_log":             on_log,
         "_on_workspace_event": on_workspace_event,
     }

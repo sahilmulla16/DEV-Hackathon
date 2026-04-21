@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import ConnectorModal, { loadConfigs } from './ConnectorModal.jsx';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import {
-    Copy, Check, Send, Sparkles, Bot, User, Code2,
-    AtSign, FileText, X, ChevronRight, Clock, Play,
+    Copy, Check, Send, Sparkles, Bot, Code2,
+    AtSign, FileText, X, ChevronRight, Clock, Play, Paperclip, Plug,
 } from 'lucide-react';
 
 const T = {
@@ -55,6 +56,16 @@ const CSS=`
 .agent-reply table { width:100%; border-collapse:collapse; font-size:0.9rem; }
 .agent-reply th { background:#252525; color:#fbbf24; padding:10px 15px; text-align:left; font-size:0.73rem; font-weight:700; letter-spacing:.5px; text-transform:uppercase; border-bottom:1px solid rgba(255,255,255,.08); }
 .agent-reply td { padding:9px 15px; color:#dcdcdc; border-bottom:1px solid rgba(255,255,255,.04); }
+.agent-reply img {
+    max-width: min(100%, 400px);
+    aspect-ratio: 1 / 1;
+    object-fit: cover;
+    border-radius: 12px;
+    border: 1px solid ${T.border};
+    margin: 16px 0;
+    display: block;
+    background: ${T.bg2};
+}
 .agent-reply tr:last-child td { border-bottom:none; }
 `;
 let _inj=false;
@@ -244,6 +255,9 @@ const Chat=({setAgentLog,setIsLogLoading,pendingMention,onWorkspaceEvent,onRunCo
     const[availableFiles,setAvailableFiles]=useState([]);
     // Inline thought state
     const[thinkLogs,setThinkLogs]=useState([]);
+    const [showConnectors, setShowConnectors] = useState(false);
+    const [connectorConfigs, setConnectorConfigs] = useState(loadConfigs);
+    const fileInputRef=useRef(null);
     const[thinkActive,setThinkActive]=useState(false);
     const[thinkElapsed,setThinkElapsed]=useState(0);
     const winRef=useRef(null);const taRef=useRef(null);
@@ -261,9 +275,21 @@ const Chat=({setAgentLog,setIsLogLoading,pendingMention,onWorkspaceEvent,onRunCo
     const addChip=(f)=>{setMentionedFiles(prev=>prev.includes(f)?prev:[...prev,f]);setInput(prev=>prev.replace(/@[\w\-. ]*$/,''));setShowDropdown(false);};
     const removeChip=(f)=>setMentionedFiles(prev=>prev.filter(x=>x!==f));
     const handleInputChange=(e)=>{const val=e.target.value;setInput(val);const m=val.match(/@([\w\-. ]*)$/);if(m){setMentionQuery(m[1]);setShowDropdown(true);}else setShowDropdown(false);};
+    const handleFileUpload=async(e)=>{
+        const file=e.target.files?.[0];
+        if(!file)return;
+        const fd=new FormData();fd.append('file',file);
+        try{
+            const r=await fetch('http://localhost:5000/api/upload',{method:'POST',body:fd});
+            const d=await r.json();
+            if(d.status){setAvailableFiles(prev=>[...prev,{name:file.name,size:file.size,ext:file.name.split('.').pop()}]);
+            addChip(file.name);}
+        }catch{}
+        e.target.value='';
+    };
     const buildMsg=()=>{const chips=mentionedFiles.map(f=>`@${f}`).join(' ');return(chips?`${chips} `:'')+input.trim();};
 
-    const send=useCallback(async(override)=>{
+    const send=useCallback(async(override, skipHistory = false)=>{
         const finalMsg=override??buildMsg();
         if(!finalMsg.trim()||isLoading)return;
         setMessages(p=>[...p,{text:finalMsg,sender:'user'}]);
@@ -271,8 +297,8 @@ const Chat=({setAgentLog,setIsLogLoading,pendingMention,onWorkspaceEvent,onRunCo
         setIsLoading(true);setIsLogLoading(true);setAgentLog([]);
         setThinkLogs([]);setThinkActive(true);startTimer();
         const history=messages.slice(-6).map(m=>[m.sender==='user'?m.text:'',m.sender==='agent'?m.text:'']);
-        try{
-            const res=await fetch('http://localhost:5000/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:finalMsg,history})});
+        try {
+            const res=await fetch('http://localhost:5000/api/chat/stream',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:finalMsg,history,connector_configs:connectorConfigs})});
             if(!res.ok)throw new Error(`Server error ${res.status}`);
             const reader=res.body.getReader();const decoder=new TextDecoder();let buffer='';
             const processChunk=(chunk)=>{
@@ -310,8 +336,7 @@ const Chat=({setAgentLog,setIsLogLoading,pendingMention,onWorkspaceEvent,onRunCo
         }finally{
             taRef.current?.focus();
             fetch('http://localhost:5000/api/files').then(r=>r.json()).then(d=>setAvailableFiles(Array.isArray(d)?d:[])).catch(()=>{});
-        }
-    },[input,mentionedFiles,isLoading,messages,setAgentLog,setIsLogLoading]);
+        }}, [isLoading, messages, setAgentLog, setIsLogLoading, buildMsg, connectorConfigs, onWorkspaceEvent]);
 
     const onKey=(e)=>{if(e.key==='Escape'){setShowDropdown(false);return;}if(e.key==='Enter'&&!e.shiftKey&&!showDropdown){e.preventDefault();send();}};
     const hasContent=input.trim().length>0||mentionedFiles.length>0;
@@ -320,7 +345,7 @@ const Chat=({setAgentLog,setIsLogLoading,pendingMention,onWorkspaceEvent,onRunCo
     const pendingUserIdx=(isLoading||thinkActive)?messages.filter(m=>m.sender==='user').length-1:-1;
     let userCount=-1;
 
-    return(
+    return(<>
         <div style={{display:'flex',flexDirection:'column',height:'100%',background:T.bg0,fontFamily:"'Outfit',sans-serif"}}>
             {/* Header */}
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 24px',height:'54px',flexShrink:0,background:'rgba(15,15,15,.9)',backdropFilter:'blur(12px)',borderBottom:`1px solid ${T.border}`}}>
@@ -359,6 +384,9 @@ const Chat=({setAgentLog,setIsLogLoading,pendingMention,onWorkspaceEvent,onRunCo
                 <div style={{maxWidth:'780px',margin:'0 auto',position:'relative'}}>
                     {showDropdown&&<MentionDropdown files={availableFiles} query={mentionQuery} onSelect={addChip} onClose={()=>setShowDropdown(false)}/>}
                     <div style={{display:'flex',alignItems:'flex-end',gap:'10px',background:T.bg2,border:`1px solid ${hasContent?'rgba(245,166,35,.4)':T.border}`,borderRadius:'16px',padding:'10px 12px',boxShadow:hasContent?'0 0 0 3px rgba(245,166,35,.07)':'none',transition:'border-color .2s,box-shadow .2s',flexWrap:'wrap'}}>
+                        <input ref={fileInputRef} type="file" style={{display:'none'}} onChange={handleFileUpload} accept=".pdf,.doc,.docx,.txt,.csv,.xlsx,.xls,.ppt,.pptx"/>
+                        <button title="Attach file" onClick={()=>fileInputRef.current?.click()} style={{width:'32px',height:'32px',display:'flex',alignItems:'center',justifyContent:'center',background:'transparent',border:'none',color:T.text2,cursor:'pointer',borderRadius:'8px',flexShrink:0,transition:'color .15s',alignSelf:'flex-end'}} onMouseEnter={e=>e.currentTarget.style.color=T.text1} onMouseLeave={e=>e.currentTarget.style.color=T.text2}><Paperclip size={16}/></button>
+                        <button title="Connectors" onClick={()=>setShowConnectors(true)} style={{width:'32px',height:'32px',display:'flex',alignItems:'center',justifyContent:'center',background:'transparent',border:'none',color:Object.keys(connectorConfigs).length>0?'#22c55e':T.text2,cursor:'pointer',borderRadius:'8px',flexShrink:0,transition:'color .15s',alignSelf:'flex-end'}} onMouseEnter={e=>e.currentTarget.style.color=Object.keys(connectorConfigs).length>0?'#4ade80':T.text1} onMouseLeave={e=>e.currentTarget.style.color=Object.keys(connectorConfigs).length>0?'#22c55e':T.text2}><Plug size={16}/></button>
                         {mentionedFiles.map(f=><MentionChip key={f} filename={f} onRemove={()=>removeChip(f)}/>)}
                         <textarea ref={taRef} value={input} onChange={handleInputChange} onKeyDown={onKey}
                             placeholder={mentionedFiles.length?'Ask something about these files…':'Message the agent… (@ to reference a file)'}
@@ -376,7 +404,8 @@ const Chat=({setAgentLog,setIsLogLoading,pendingMention,onWorkspaceEvent,onRunCo
                 </div>
             </div>
         </div>
-    );
+        <ConnectorModal isOpen={showConnectors} onClose={()=>setShowConnectors(false)} onConnectorsChange={setConnectorConfigs}/>
+    </>);
 };
 
 export default Chat;

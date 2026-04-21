@@ -4,6 +4,7 @@ import {
     Trash2, RefreshCw, Database, AtSign, Copy, Check,
     ChevronDown, AlertCircle,
 } from 'lucide-react';
+import FileUpload from './FileUpload';
 import './KnowledgeBase.css';
 
 /* ── File type metadata ─────────────────────────────────── */
@@ -95,12 +96,28 @@ const FileRow = ({ file, onDelete, onMentionCopy }) => {
 };
 
 /* ── Main KnowledgeBase component ────────────────────────── */
-const KnowledgeBase = ({ onMentionInsert }) => {
+const KnowledgeBase = ({ onMentionFile }) => {
     const [files,     setFiles]     = useState([]);
     const [loading,   setLoading]   = useState(false);
     const [error,     setError]     = useState('');
     const [collapsed, setCollapsed] = useState(false);
     const [toastMsg,  setToastMsg]  = useState('');
+
+    // State for uploads, moved from App.js
+    const [uploadStatus,   setUploadStatus]  = useState('');
+    const [isUploading,    setIsUploading]   = useState(false);
+
+    const handleUploadSuccess = (status) => {
+        setUploadStatus(status);
+        setIsUploading(false);
+        fetchFiles(); // Re-fetch files directly on success
+        setTimeout(() => setUploadStatus(''), 5000);
+    };
+
+    const handleUploadError = (errorMsg) => {
+        setUploadStatus(`Upload failed: ${errorMsg}`);
+        setIsUploading(false);
+    };
 
     const fetchFiles = useCallback(async () => {
         setLoading(true);
@@ -132,7 +149,7 @@ const KnowledgeBase = ({ onMentionInsert }) => {
 
     const handleMentionCopy = (token) => {
         showToast(`${token} copied — paste it in the chat!`);
-        if (onMentionInsert) onMentionInsert(token);
+        if (onMentionFile) onMentionFile(token.replace(/^@/, ''));
     };
 
     const showToast = (msg) => {
@@ -142,7 +159,6 @@ const KnowledgeBase = ({ onMentionInsert }) => {
 
     return (
         <div className="kb-root">
-
             {/* Header */}
             <div className="kb-header" onClick={() => setCollapsed(v => !v)}>
                 <div className="kb-header-left">
@@ -167,6 +183,16 @@ const KnowledgeBase = ({ onMentionInsert }) => {
 
             {/* Body */}
             <div className={`kb-body ${collapsed ? 'kb-body--collapsed' : ''}`}>
+                {/* Upload component is now inside KnowledgeBase */}
+                <section className="sidebar-section" style={{ padding: '0 0 16px' }}>
+                    <FileUpload
+                        onUploadSuccess={handleUploadSuccess}
+                        onUploadError={handleUploadError}
+                        setIsUploading={setIsUploading}
+                    />
+                    {isUploading && !uploadStatus && <p className="status-message">⏳ Uploading…</p>}
+                    {uploadStatus && !isUploading && <p className="status-message">{uploadStatus}</p>}
+                </section>
 
                 {/* Hint */}
                 <div className="kb-hint">
