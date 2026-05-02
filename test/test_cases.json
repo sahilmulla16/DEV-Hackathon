@@ -1,0 +1,268 @@
+[
+  {
+    "id": 1,
+    "category": "rag",
+    "query": "What is the full name mentioned in the SSC marksheet?",
+    "expected_tool": "rag_search",
+    "expected_keywords": ["name"]
+  },
+  {
+    "id": 2,
+    "category": "rag",
+    "query": "How many marks were obtained in Science and Technology?",
+    "expected_tool": "rag_search",
+    "expected_keywords": ["marks", "science"]
+  },
+  {
+    "id": 3,
+    "category": "rag",
+    "query": "Summarize the uploaded BDA chapter notes.",
+    "expected_tool": "rag_search",
+    "expected_keywords": ["summary", "bda"]
+  },
+  {
+    "id": 4,
+    "category": "rag",
+    "query": "What is the project title in the uploaded document?",
+    "expected_tool": "rag_search",
+    "expected_keywords": ["project", "title"]
+  },
+  {
+    "id": 5,
+    "category": "rag",
+    "query": "List the three Vs of Big Data from the notes.",
+    "expected_tool": "rag_search",
+    "expected_keywords": ["volume", "velocity", "variety"]
+  },
+  {
+    "id": 6,
+    "category": "rag",
+    "query": "Who is the doctor mentioned in the treatment plan?",
+    "expected_tool": "rag_search",
+    "expected_keywords": ["doctor", "dr."]
+  },
+  {
+    "id": 7,
+    "category": "rag",
+    "query": "Find the total marks in the uploaded rubric.",
+    "expected_tool": "rag_search",
+    "expected_keywords": ["total", "marks"]
+  },
+  {
+    "id": 8,
+    "category": "rag",
+    "query": "Explain the introduction of the uploaded report.",
+    "expected_tool": "rag_search",
+    "expected_keywords": ["introduction"]
+  },
+  {
+    "id": 9,
+    "category": "rag",
+    "query": "What are the objectives mentioned in the project document?",
+    "expected_tool": "rag_search",
+    "expected_keywords": ["objective", "objectives"]
+  },
+  {
+    "id": 10,
+    "category": "rag",
+    "query": "Extract the conclusion from the uploaded file.",
+    "expected_tool": "rag_search",
+    "expected_keywords": ["conclusion"]
+  },
+  {
+    "id": 11,
+    "category": "web_search",
+    "query": "Who is the current Prime Minister of India?",
+    "expected_tool": "web_search",
+    "expected_keywords": ["Modi"]
+  },
+  {
+    "id": 12,
+    "category": "web_search",
+    "query": "What is the tallest building in the world?",
+    "expected_tool": "web_search",
+    "expected_keywords": ["Burj Khalifa"]
+  },
+  {
+    "id": 13,
+    "category": "web_search",
+    "query": "Latest AI trends in 2026.",
+    "expected_tool": "web_search",
+    "expected_keywords": ["agent", "multimodal"]
+  },
+  {
+    "id": 14,
+    "category": "web_search",
+    "query": "What is the capital of Japan?",
+    "expected_tool": "web_search",
+    "expected_keywords": ["Tokyo"]
+  },
+  {
+    "id": 15,
+    "category": "web_search",
+    "query": "Who founded OpenAI?",
+    "expected_tool": "web_search",
+    "expected_keywords": ["Altman", "Musk"]
+  },
+  {
+    "id": 16,
+    "category": "web_search",
+    "query": "What is quantum computing?",
+    "expected_tool": "web_search",
+    "expected_keywords": ["qubit", "superposition"]
+  },
+  {
+    "id": 17,
+    "category": "web_search",
+    "query": "Latest NVIDIA GPU released in 2026.",
+    "expected_tool": "web_search",
+    "expected_keywords": ["RTX", "Blackwell"]
+  },
+  {
+    "id": 18,
+    "category": "web_search",
+    "query": "What is the population of India?",
+    "expected_tool": "web_search",
+    "expected_keywords": ["billion", "1.4"]
+  },
+  {
+    "id": 19,
+    "category": "web_search",
+    "query": "Explain cloud computing.",
+    "expected_tool": "web_search",
+    "expected_keywords": ["aws", "azure", "gcp"]
+  },
+  {
+    "id": 20,
+    "category": "web_search",
+    "query": "What is Agentic AI?",
+    "expected_tool": "web_search",
+    "expected_keywords": ["agent", "autonomous"]
+  },
+  {
+    "id": 21,
+    "category": "calculator",
+    "query": "Calculate 14 * 8 + 99",
+    "expected_tool": "calculator",
+    "expected_keywords": ["211"]
+  },
+  {
+    "id": 22,
+    "category": "calculator",
+    "query": "What is 1024 divided by 64?",
+    "expected_tool": "calculator",
+    "expected_keywords": ["16"]
+  },
+  {
+    "id": 23,
+    "category": "calculator",
+    "query": "Evaluate 2 to the power of 10.",
+    "expected_tool": "calculator",
+    "expected_keywords": ["1024"]
+  },
+  {
+    "id": 24,
+    "category": "calculator",
+    "query": "Compute 500 minus 433.",
+    "expected_tool": "calculator",
+    "expected_keywords": ["67"]
+  },
+  {
+    "id": 25,
+    "category": "calculator",
+    "query": "What is 75 modulus 7?",
+    "expected_tool": "calculator",
+    "expected_keywords": ["5"]
+  },
+  {
+    "id": 31,
+    "category": "coding_agent",
+    "query": "Write Python code to reverse a string.",
+    "expected_tool": "coding_agent_tool",
+    "expected_keywords": ["::-1"]
+  },
+  {
+    "id": 32,
+    "category": "coding_agent",
+    "query": "Generate Python code to calculate factorial of 6.",
+    "expected_tool": "coding_agent_tool",
+    "expected_keywords": ["factorial", "720"]
+  },
+  {
+    "id": 33,
+    "category": "coding_agent",
+    "query": "Write Python code to print first 5 even numbers.",
+    "expected_tool": "coding_agent_tool",
+    "expected_keywords": ["0", "2", "4", "6", "8"]
+  },
+  {
+    "id": 34,
+    "category": "coding_agent",
+    "query": "Count vowels in a string using Python.",
+    "expected_tool": "coding_agent_tool",
+    "expected_keywords": ["vowels", "count"]
+  },
+  {
+    "id": 35,
+    "category": "coding_agent",
+    "query": "Write Python code to sort a list.",
+    "expected_tool": "coding_agent_tool",
+    "expected_keywords": ["sort()", "sorted"]
+  },
+  {
+    "id": 41,
+    "category": "memory",
+    "query": "My name is Sahil.",
+    "expected_tool": "no_tool",
+    "expected_keywords": ["noted", "Sahil"]
+  },
+  {
+    "id": 42,
+    "category": "memory",
+    "query": "What is my name?",
+    "expected_tool": "no_tool",
+    "expected_keywords": ["Sahil"]
+  },
+  {
+    "id": 43,
+    "category": "memory",
+    "query": "Remember that I live in Mumbai.",
+    "expected_tool": "no_tool",
+    "expected_keywords": ["noted", "Mumbai"]
+  },
+  {
+    "id": 44,
+    "category": "memory",
+    "query": "Where do I live?",
+    "expected_tool": "no_tool",
+    "expected_keywords": ["Mumbai"]
+  },
+  {
+    "id": 45,
+    "category": "memory",
+    "query": "Remember my favorite color is black.",
+    "expected_tool": "no_tool",
+    "expected_keywords": ["noted", "black"]
+  },
+  {
+    "id": 51,
+    "category": "research_agent",
+    "query": "Write a detailed report on the applications of AI in healthcare.",
+    "expected_tool": "research_agent_tool",
+    "expected_keywords": ["healthcare", "report", "diagnostics", "treatment"]
+  },
+  {
+    "id": 52,
+    "category": "research_agent",
+    "query": "Do a deep research on AI agent architectures.",
+    "expected_tool": "research_agent_tool",
+    "expected_keywords": ["architecture", "agent", "planning", "memory"]
+  },
+  {
+    "id": 53,
+    "category": "research_agent",
+    "query": "Summarize the latest advancements in large language models.",
+    "expected_tool": "research_agent_tool",
+    "expected_keywords": ["LLM", "transformer", "GPT", "summary"]
+  }
+]
