@@ -4,6 +4,7 @@ import queue
 import traceback
 import logging
 import threading
+import shutil
 from datetime import datetime
 
 from flask import Flask, request, jsonify, Response, stream_with_context
@@ -15,40 +16,56 @@ from agent import run_agent_once, ingest_knowledge_base, backfill_rag_metadata
 from sandbox import ws_list_files, ws_read_file, ws_reset, BASE_DIR
 import core.config
 
-
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-
 
 class Config:
     UPLOAD_FOLDER = os.environ.get('UPLOAD_FOLDER', 'uploads')
     CORS_ORIGINS = os.environ.get('CORS_ORIGINS', 'http://localhost:3000').split(',')
     DEBUG = os.environ.get('FLASK_DEBUG', 'False').lower() in ('true', '1', 't')
 
-
 app.config.from_object(Config)
+
 CORS(app, resources={r"/api/*": {"origins": app.config['CORS_ORIGINS']}})
+
+
+# ─────────────────────────────────────────────
+# INITIALIZATION
+# ─────────────────────────────────────────────
 
 # Ensure uploads folder exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Vector store
-core.config._vectorstore = Chroma(
-    collection_name=core.config.MEM_COLLECTION,
-    embedding_function=core.config._embedding_fn,
-    persist_directory=core.config.PERSIST_DIR
-)
+# Vector store with ChromaDB corruption recovery
+try:
+    core.config._vectorstore = Chroma(
+        collection_name=core.config.MEM_COLLECTION,
+        embedding_function=core.config._embedding_fn,
+        persist_directory=core.config.PERSIST_DIR
+    )
+except Exception as e:
+    logger.warning(f"Detected ChromaDB corruption. Resetting {core.config.PERSIST_DIR}. Error: {e}")
+    shutil.rmtree(core.config.PERSIST_DIR, ignore_errors=True)
+    
+    core.config._vectorstore = Chroma(
+        collection_name=core.config.MEM_COLLECTION,
+        embedding_function=core.config._embedding_fn,
+        persist_directory=core.config.PERSIST_DIR
+    )
 
 # Allowed file types
 ALLOWED = {'.pdf', '.doc', '.docx', '.txt', '.csv', '.xlsx', '.xls', '.ppt', '.pptx'}
 
-# 🔥 Fallback: Track last uploaded file
+# Fallback: Track last uploaded file
 LAST_UPLOADED_FILE = None
 
 
@@ -60,7 +77,7 @@ try:
     _bf = backfill_rag_metadata()
     logger.info(f"RAG startup backfill: {_bf}")
 except Exception as e:
-    logger.warning(f"RAG startup backfill failed: {e}")
+    logger.warning(f"RAG startup backfill failed (non-fatal): {e}")
 
 
 # ─────────────────────────────────────────────
@@ -76,7 +93,6 @@ def _fi(fn):
         "uploaded": datetime.fromtimestamp(st.st_mtime).isoformat(),
         "ext": os.path.splitext(fn)[1].lstrip('.').lower()
     }
-
 
 def _sse(ev, d):
     return f"event: {ev}\ndata: {json.dumps(d)}\n\n"
@@ -99,9 +115,13 @@ def chat():
         r = run_agent_once(
             user_input=user_input,
             history=history,
-            file_path=LAST_UPLOADED_FILE  # 🔥 fallback added
+            # Your feature: fallback to last uploaded file
+            file_path=LAST_UPLOADED_FILE
         )
-        return jsonify({"answer": r.get("final", "Error."), "log": r.get("log", [])})
+        return jsonify({
+            "answer": r.get("final", "Error."),
+            "log": r.get("log", [])
+        })
     except Exception as e:
         logger.error(e)
         return jsonify({"error": "Internal error."}), 500
@@ -129,7 +149,8 @@ def chat_stream():
             r = run_agent_once(
                 user_input=user_input,
                 history=history,
-                file_path=LAST_UPLOADED_FILE,  # 🔥 fallback added
+                # Your feature
+                file_path=LAST_UPLOADED_FILE,
                 on_log=on_log,
                 on_workspace_event=on_ws
             )
@@ -145,18 +166,125 @@ def chat_stream():
     def generate():
         yield ": ok\n\n"
         while True:
-            item = q.get()
-            if item["_e"] == "done":
+            try:
+                item = q.get(timeout=90)
+            except queue.Empty:
+                yield ": ka\n\n"
+                continue
+
+            ev = item.pop("_e")
+            if ev == "done":
                 yield _sse("done", {})
                 break
-            ev = item.pop("_e")
+            
             yield _sse(ev, item)
 
-    return Response(stream_with_context(generate()), mimetype="text/event-stream")
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
 
 
 # ─────────────────────────────────────────────
-# FILE ROUTES
+# WORKSPACE ROUTES
+# ─────────────────────────────────────────────
+
+@app.route('/api/workspace/files', methods=['GET'])
+def ws_files():
+    return jsonify(ws_list_files())
+
+
+@app.route('/api/workspace/files/<path:fp>', methods=['GET'])
+def ws_file_get(fp):
+    r = ws_read_file(fp)
+    if r.get("status") == "error":
+        return jsonify(r), 404
+    return jsonify(r)
+
+
+@app.route('/api/workspace/files/<path:fp>', methods=['POST'])
+def ws_file_write(fp):
+    """
+    Write a file to the workspace.
+    Body: { "content": "..." }
+    """
+    from sandbox import ws_write_file
+    
+    data = request.json or {}
+    content = data.get('content', '')
+    result = ws_write_file(fp, content)
+    
+    return jsonify(result), 200 if result.get('status') == 'success' else 400
+
+
+@app.route('/api/workspace/run', methods=['POST'])
+def ws_run():
+    """Run a command in the workspace and stream output via SSE."""
+    from sandbox import ws_run_code_streaming
+    
+    data = request.json or {}
+    command = data.get('command', '').strip()
+
+    if not command:
+        return jsonify({"error": "No command"}), 400
+
+    q = queue.Queue()
+
+    def _run():
+        try:
+            for evt in ws_run_code_streaming(command):
+                q.put(evt)
+        except Exception as exc:
+            q.put({"type": "stderr", "line": str(exc)})
+        finally:
+            q.put(None)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+    def generate():
+        yield ": ok\n\n"
+        while True:
+            item = q.get()
+            if item is None:
+                yield _sse("run_done", {})
+                break
+            yield _sse(item.get("type", "stdout"), item)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
+
+
+@app.route('/api/workspace/reset', methods=['POST'])
+def ws_reset_route():
+    return jsonify(ws_reset())
+
+
+@app.route('/api/workspace/servers', methods=['GET'])
+def ws_svrs():
+    from sandbox import ws_list_servers
+    return jsonify(ws_list_servers())
+
+
+@app.route('/api/workspace/servers/<int:port>', methods=['DELETE'])
+def ws_stop(port):
+    from sandbox import ws_stop_server
+    return jsonify(ws_stop_server(port))
+
+
+# ─────────────────────────────────────────────
+# FILE / KNOWLEDGE BASE ROUTES
 # ─────────────────────────────────────────────
 
 @app.route('/api/files', methods=['GET'])
@@ -165,7 +293,8 @@ def list_files():
         fld = app.config['UPLOAD_FOLDER']
         files = [
             _fi(f) for f in os.listdir(fld)
-            if os.path.isfile(os.path.join(fld, f)) and os.path.splitext(f)[1].lower() in ALLOWED
+            if os.path.isfile(os.path.join(fld, f)) 
+            and os.path.splitext(f)[1].lower() in ALLOWED
         ]
         files.sort(key=lambda x: x['uploaded'], reverse=True)
         return jsonify(files), 200
@@ -194,7 +323,6 @@ def upload():
         return jsonify({"error": "No file"}), 400
 
     f = request.files['file']
-
     if not f.filename:
         return jsonify({"error": "No filename"}), 400
 
@@ -205,10 +333,9 @@ def upload():
     fn = secure_filename(f.filename)
     fp = os.path.join(app.config['UPLOAD_FOLDER'], fn)
 
-    # Save locally
     f.save(fp)
-
-    # 🔥 Track last uploaded file
+    
+    # Your feature: Track last uploaded file
     LAST_UPLOADED_FILE = fn
 
     try:
@@ -226,12 +353,25 @@ def upload():
 
 
 # ─────────────────────────────────────────────
+# RAG
+# ─────────────────────────────────────────────
+
+@app.route('/api/rag/backfill', methods=['POST'])
+def rag_backfill():
+    result = backfill_rag_metadata()
+    return jsonify({"status": "ok", "message": result}), 200
+
+
+# ─────────────────────────────────────────────
 # MISC
 # ─────────────────────────────────────────────
 
 @app.route('/api/health', methods=['GET'])
 def health():
-    return jsonify({"status": "ok", "workspace": str(BASE_DIR)}), 200
+    return jsonify({
+        "status": "ok", 
+        "workspace": str(BASE_DIR)
+    }), 200
 
 
 @app.route('/api/status', methods=['GET'])
@@ -239,11 +379,34 @@ def status():
     return jsonify({
         "activeAgents": 4,
         "tasksInProgress": 6,
-        "systemStatus": "Online"
+        "systemStatus": "Online",
+        "agents": ["LLaMA", "Cerebras", "Research", "Critic"]
     })
 
 
-# ─────────────────────────────────────────────
+@app.route('/api/features', methods=['GET'])
+def features():
+    return jsonify([
+        {
+            "id": 1,
+            "icon": "code",
+            "title": "Sandboxed Execution",
+            "description": "All code runs inside workspace/."
+        },
+        {
+            "id": 2,
+            "icon": "search",
+            "title": "Web Search",
+            "description": "Real-time DuckDuckGo search."
+        },
+        {
+            "id": 3,
+            "icon": "file-text",
+            "title": "File System",
+            "description": "Create, edit, run files in the sandbox."
+        }
+    ])
+
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

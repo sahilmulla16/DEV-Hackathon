@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .btn {
+    @apply px-6 py-2 border border-soft-black bg-off-white text-soft-black font-medium transition-all duration-300 hover:bg-soft-black hover:text-off-white hover:shadow-lg;
+  }
+
+  .hero-text {
+    @apply text-5xl md:text-7xl font-bold text-soft-black leading-none;
+  }
+
+  .section-title {
+    @apply text-3xl md:text-5xl font-light mb-8 border-l-4 border-accent-gold pl-4;
+  }
+}

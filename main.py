@@ -1,5 +1,6 @@
 # main.py
 import os
+import shutil
 import click
 from langchain_chroma import Chroma
 
@@ -16,11 +17,16 @@ def cli():
     """AI Agent Platform CLI"""
     # Initialize the memory vector store and assign it to the global variable in the core config.
     print("🧠 Initializing agent memory vector store...")
-    core.config._vectorstore = Chroma(
-        collection_name=core.config.MEM_COLLECTION,
-        embedding_function=core.config._embedding_fn,
-        persist_directory=core.config.PERSIST_DIR
-    )
+    try:
+        core.config._vectorstore = Chroma(
+            collection_name=core.config.MEM_COLLECTION,
+            embedding_function=core.config._embedding_fn,
+            persist_directory=core.config.PERSIST_DIR
+        )
+    except Exception as e:
+        print(f"⚠️ ChromaDB loading failed, resetting memory database: {e}")
+        shutil.rmtree(core.config.PERSIST_DIR, ignore_errors=True)
+        core.config._vectorstore = Chroma(collection_name=core.config.MEM_COLLECTION, embedding_function=core.config._embedding_fn, persist_directory=core.config.PERSIST_DIR)
     print("✅ Agent memory loaded.")
 
 @cli.command()
