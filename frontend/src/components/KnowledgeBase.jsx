@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
     FileText, File, FileSpreadsheet, FileCode, Presentation,
-    Trash2, RefreshCw, Database, AtSign, Copy, Check,
+    Trash2, RefreshCw, Database, AtSign, Check,
     ChevronDown, AlertCircle,
 } from 'lucide-react';
 import './KnowledgeBase.css';
+import { supabase } from "../lib/supabaseClient";
 
 /* ── File type metadata ─────────────────────────────────── */
 const EXT_META = {
@@ -103,29 +104,68 @@ const KnowledgeBase = ({ onMentionInsert }) => {
     const [toastMsg,  setToastMsg]  = useState('');
 
     const fetchFiles = useCallback(async () => {
-        setLoading(true);
-        setError('');
-        try {
-            const res  = await fetch('http://localhost:5000/api/files');
-            if (!res.ok) throw new Error(`${res.status}`);
-            const data = await res.json();
-            setFiles(Array.isArray(data) ? data : []);
-        } catch (err) {
-            setError('Could not load files. Is the server running?');
-        } finally {
-            setLoading(false);
-        }
+    setLoading(true);
+    setError("");
+
+    try {
+        const { data: userData } = await supabase.auth.getUser();
+        const user = userData.user;
+
+        if (!user) throw new Error("User not logged in");
+
+        const { data, error } = await supabase
+        .from("knowledge_base")
+        .select("*")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+
+        if (error) throw error;
+
+        // 🔥 Map DB → UI format
+        const formatted = data.map(f => ({
+        name: f.title,
+        size: f.content?.length || 0,
+        uploaded: f.created_at,
+        ext: f.title.split('.').pop()
+        }));
+
+        setFiles(formatted);
+
+    } catch (err) {
+        setError("Could not load files");
+    } finally {
+        setLoading(false);
+    }
     }, []);
 
     useEffect(() => { fetchFiles(); }, [fetchFiles]);
 
     const handleDelete = async (filename) => {
         try {
-            const res = await fetch(`http://localhost:5000/api/files/${encodeURIComponent(filename)}`, { method:'DELETE' });
-            if (!res.ok) throw new Error(`${res.status}`);
+            // 🧠 Get current user
+            const { data: userData } = await supabase.auth.getUser();
+            const user = userData.user;
+
+            if (!user) throw new Error("User not logged in");
+
+            // 🧠 Delete from Supabase
+            const { error } = await supabase
+                .from("knowledge_base")
+                .delete()
+                .eq("user_id", user.id)
+                .eq("title", filename);
+
+            if (error) throw error;
+
+            // 🧠 Delete from Flask Backend (The only new addition)
+            await fetch(`http://localhost:5000/api/files/${filename}`, { method: 'DELETE' }).catch(() => {});
+
+            // 🧠 Update UI
             setFiles(prev => prev.filter(f => f.name !== filename));
+
             showToast(`'${filename}' deleted.`);
-        } catch {
+        } catch (err) {
+            console.error(err);
             showToast('Delete failed.');
         }
     };

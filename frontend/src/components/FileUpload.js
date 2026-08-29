@@ -2,6 +2,7 @@ import React, { useReducer, useRef, useState } from 'react';
 import { Upload, File, X, ChevronDown } from 'lucide-react';
 import { uploadFile } from '../services/api';
 import './FileUpload.css';
+import { supabase } from "../lib/supabaseClient";
 
 const initialState = {
     selectedFile: null,
@@ -36,7 +37,7 @@ function fileUploadReducer(state, action) {
 const FileUpload = ({ onUploadSuccess, onUploadError, setIsUploading }) => {
     const [isOpen, setIsOpen] = useState(true);
     const [state, dispatch] = useReducer(fileUploadReducer, initialState);
-    const { selectedFile, isDragging, uploadProgress, status } = state;
+    const { selectedFile, uploadProgress, status } = state;
     const fileInputRef = useRef(null);
 
     const handleFileChange = (event) => {
@@ -90,7 +91,28 @@ const FileUpload = ({ onUploadSuccess, onUploadError, setIsUploading }) => {
             }, 200);
 
             const result = await uploadFile(selectedFile);
-            
+
+            // 🧠 Step 1: get logged-in user
+            const { data: userData } = await supabase.auth.getUser();
+            const user = userData.user;
+
+            if (!user) {
+            throw new Error("User not logged in");
+            }
+
+            // 🧠 Step 2: store in Supabase
+            const { error } = await supabase.from("knowledge_base").insert([
+            {
+                user_id: user.id,
+                title: selectedFile.name,
+                content: result.content || "No content",
+            },
+            ]);
+
+            if (error) {
+            throw error;
+            }
+                        
             clearInterval(progressInterval);
             dispatch({ type: 'UPLOAD_COMPLETE' });
             

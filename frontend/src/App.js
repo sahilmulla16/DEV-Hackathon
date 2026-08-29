@@ -4,6 +4,8 @@ import FileUpload from './components/FileUpload';
 import KnowledgeBase from './components/KnowledgeBase';
 import WorkspacePanel from './components/WorkspacePanel';
 import AgentLog from './components/AgentLog';
+import Auth from "./components/Auth";
+import { supabase } from "./lib/supabaseClient";
 import {
     Menu, X, Sparkles, Monitor, TerminalSquare,
     PanelLeftClose, PanelLeftOpen, Cpu,
@@ -76,6 +78,50 @@ export default function App() {
     const [isLogLoading,   setIsLogLoading]  = useState(false);
     const [pendingMention, setPendingMention]= useState(null);
     const [kbKey,          setKbKey]         = useState(0);
+
+    //Login
+    const [user, setUser] = useState(null);
+    const [loadingUser, setLoadingUser] = useState(true);
+    const [showAuth, setShowAuth] = useState(false);
+    const [showUserMenu, setShowUserMenu] = useState(false);
+
+    const menuRef = useRef(null);
+
+    const handleLogout = async () => {
+        await supabase.auth.signOut();
+        setUser(null);
+    };
+
+    useEffect(() => {
+        const handleClickOutside = (e) => {
+            if (menuRef.current && !menuRef.current.contains(e.target)) {
+                setShowUserMenu(false);
+            }
+        };
+
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
+    }, []);
+
+    useEffect(() => {
+        const getSession = async () => {
+            const { data } = await supabase.auth.getSession();
+            setUser(data.session?.user || null);
+            setLoadingUser(false);
+        };
+
+        getSession();
+
+        const { data: listener } = supabase.auth.onAuthStateChange(
+            (_event, session) => {
+                setUser(session?.user || null);
+            }
+        );
+
+        return () => {
+            listener.subscription.unsubscribe();
+        };
+    }, []);
 
     // Left sidebar
     const [sidebarOpen,    setSidebarOpen]   = useState(true);
@@ -183,10 +229,29 @@ export default function App() {
         { id:'logs',      icon:<TerminalSquare size={16}/>, title:'System Logs', accent:'#f5a623' },
     ];
 
+    if (loadingUser) return null;
+
     return (
         <div className="App">
             {/* Mobile topbar */}
             <header className="mobile-header">
+                {user ? (
+                    <button
+                        className="icon-btn"
+                        onClick={async () => {
+                            handleLogout();
+                        }}
+                    >
+                        Logout
+                    </button>
+                ) : (
+                    <button
+                        className="icon-btn"
+                        onClick={() => setShowAuth(true)}
+                    >
+                        Login
+                    </button>
+                )}
                 <button className="icon-btn" onClick={() => { setMobileSidebar(!mobileSidebar); setMobilePanel(false); }}>
                     <Menu size={20}/>
                 </button>
@@ -250,6 +315,48 @@ export default function App() {
 
                 {/* ══ CHAT ════════════════════════════════════════ */}
                 <div className="chat-container">
+                    {/* 🔥 NEW CHAT TOP BAR */}
+                    <div className="chat-topbar">
+                        <div className="chat-title">AI Agent</div>
+
+                        <div className="user-menu" ref={menuRef}>
+                            {user ? (
+                                <div className="user-info">
+                                    <button
+                                        className="user-btn"
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            setShowUserMenu(!showUserMenu);
+                                        }}
+                                    >
+                                        {user?.email?.[0]?.toUpperCase() || "U"}
+                                    </button>
+
+                                    {showUserMenu && (
+                                        <div className="user-dropdown">
+                                            <p className="user-email">{user.email}</p>
+                                            <button
+                                                className="logout-btn"
+                                                onClick={() => {
+                                                    handleLogout();
+                                                    setShowUserMenu(false);
+                                                }}
+                                            >
+                                                Logout
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <button
+                                    className="auth-btn login"
+                                    onClick={() => setShowAuth(true)}
+                                >
+                                    Login
+                                </button>
+                            )}
+                        </div>
+                    </div>
                     <Chat
                         key={chatKey}
                         setAgentLog={setAgentLog}
@@ -301,6 +408,9 @@ export default function App() {
                     </aside>
                 )}
 
+                {/* ══ Login Button ══════════════════════════ */}
+                
+
                 {/* ══ RIGHT ICON SIDEBAR ══════════════════════════ */}
                 <div className="right-icon-sidebar">
                     {RIGHT_TABS.map(tab => (
@@ -317,6 +427,16 @@ export default function App() {
                     ))}
                 </div>
             </main>
+            {/* 🔐 AUTH POPUP */}
+            {showAuth && (
+                <Auth
+                    onLogin={(u) => {
+                        setUser(u);
+                        setShowAuth(false);
+                    }}
+                    onClose={() => setShowAuth(false)}
+                />
+            )}
         </div>
     );
 }

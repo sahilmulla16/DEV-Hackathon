@@ -402,6 +402,138 @@ body {
     border-left: none;
     overflow: hidden;
 }
+/* ═══════════════════════════════════════════════════════════════
+   Auth
+═══════════════════════════════════════════════════════════════ */
+
+/* Login & Logout buttons (used in App.js header) */
+.auth-btn {
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    padding: 7px 14px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.18s ease;
+    border: 1px solid transparent;
+}
+
+.auth-btn.login {
+    background: var(--gold-dim);
+    color: var(--gold-text);
+    border: 1px solid rgba(245,166,35,0.25);
+    backdrop-filter: blur(6px);
+}
+
+.auth-btn.login:hover {
+    background: var(--gold);
+    color: #0c0d11;
+    box-shadow: 0 4px 14px var(--gold-glow);
+    transform: translateY(-1px);
+}
+
+.user-menu {
+    position: relative;
+}
+
+.user-info {
+  position: relative;
+}
+
+.user-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #f5a623, #ffb73a);
+  color: #0c0d11;
+  font-weight: 700;
+  font-size: 0.9rem;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 12px rgba(245,166,35,0.35);
+}
+
+.user-btn:hover {
+  transform: translateY(-1px) scale(1.05);
+  box-shadow: 0 6px 20px rgba(245,166,35,0.45);
+}
+
+.user-dropdown {
+  position: absolute;
+  top: 46px;
+  right: 0;
+  width: 220px;
+  background: rgba(20,22,30,0.95);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(10px);
+}
+
+.user-email {
+  font-size: 0.75rem;
+  color: var(--text-1);
+  margin-bottom: 10px;
+}
+
+.logout-btn {
+  width: 100%;
+  padding: 9px 10px;
+  background: rgba(239,68,68,0.08);
+  border: 1px solid rgba(239,68,68,0.25);
+  color: var(--red);
+  font-size: 0.8rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+}
+
+.logout-btn:hover {
+  background: rgba(239,68,68,0.18);
+  color: #fff;
+}
+
+.user-btn {
+    opacity: 0.95;
+}
+
+.chat-loading .user-btn {
+    opacity: 0.6;
+}
+
+.chat-topbar {
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+
+    background: rgba(0,0,0,0.4);
+    backdrop-filter: blur(10px);
+
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    z-index: 10;
+}
+
+.chat-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-1);
+}
+
+@media (max-width: 768px) {
+    .user-menu {
+        right: 16px;
+    }
+}
+
 
 /* ═══════════════════════════════════════════════════════════════
    CHAT INTERNALS (legacy compat)
@@ -432,7 +564,7 @@ body {
 
 .chat-window {
     flex-grow: 1;
-    padding: 32px 48px;
+     padding: 70px 48px 32px; /* top padding increased */
     overflow-y: auto;
     display: flex;
     flex-direction: column;
